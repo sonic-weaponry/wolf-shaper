@@ -24,7 +24,7 @@ env:
   # sha256 of the official v1.0.2 binaries the checks load. The Windows one is also the reference install's.
   OFFICIAL_WINDOWS_SHA256: 35ad3db823fba86dfd1f35b827f1285496ce306695de483c54ac447ce6e2d699
   OFFICIAL_MAC_SHA256: a0698fcfdf6f99a3a611d686ca72f3d81f5f4b0ec903d46cfac135654c12a95a
-  OFFICIAL_LINUX_SHA256: ''
+  OFFICIAL_LINUX_SHA256: b54abee0ff9fe46313bda15a5ab8c758832c0e0741e9d30c49c4a62ba98f4e0f
 
 jobs:
   macos:
