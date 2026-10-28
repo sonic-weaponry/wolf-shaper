@@ -113,7 +113,7 @@ jobs:
 
       - name: Pack our build with its licenses and source link
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: bash ci/package_artifact.sh bin dist/wolf-shaper-macos-universal "macOS (universal: Apple Silicon and Intel)"
+        run: bash ci/package_artifact.sh bin dist/wolf-shaper-macos-universal "macOS universal (Apple Silicon and Intel)"
 
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
