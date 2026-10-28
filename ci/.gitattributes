@@ -1,0 +1,4 @@
+# The checks compare frozen files byte for byte, so every runner must check them out exactly as committed
+# (Windows checkouts would otherwise turn LF into CRLF).
+* text eol=lf
+*.vst3state binary
