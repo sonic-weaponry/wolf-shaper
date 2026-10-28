@@ -882,7 +882,7 @@ static bool listParameters(IEditController* controller, std::vector<Parameter>& 
 }
 
 // Which VST3 parameter each saved symbol lands on: load a state that changes only that symbol and see which parameter
-// moves. Measured through the controller, which is how the racks' saved values reach Ableton's macro mappings.
+// moves. Measured through the controller, which is how saved values reach a host's automation and mappings.
 static bool mapSymbols(Session& session, std::vector<Parameter>& parameters, std::string& error)
 {
     std::string defaults;
@@ -1004,8 +1004,8 @@ static std::string parametersJson(const std::vector<Parameter>& parameters)
 // --------------------------------------------------------------------------------------------------------------------
 // Check: class IDs
 
-// What a plugin built on the VST3 SDK (as JUCE plugins are) hands the host on this platform for the ID Ableton saved
-// from the official Windows build. Printed for reference only.
+// What a plugin built on the VST3 SDK (as JUCE plugins are) hands the host on this platform for the class ID the
+// official Windows build reports. Printed for reference only.
 static void printSdkReference()
 {
     const FUID reference(0x44504620, 0x6173636C, 0x70735773, 0x00000000);
@@ -1537,8 +1537,8 @@ static bool checkInstance(Module& module, const std::string& frozenPath, const s
     }
     json += "  },\n";
 
-    // What the controller offers a host. Ableton saves the controller's getState next to the component's state
-    // (<ControllerState>, empty in the racks) and hands it back with setState when a project opens.
+    // What the controller offers a host. Hosts save the controller's getState next to the component's state (in
+    // Ableton Live projects, <ControllerState>) and hand it back with setState when a project opens.
     MemoryStream controllerState;
     const tresult getStateResult = session.controller->getState(&controllerState);
     MemoryStream empty;
@@ -1551,7 +1551,7 @@ static bool checkInstance(Module& module, const std::string& frozenPath, const s
     json += "    \"set_state_empty\": " + jsonString(resultName(setStateResult)) + "\n";
     json += "  }\n}\n";
 
-    // A second instance while the first is open, as when two racks with Wolf Shaper are loaded at once.
+    // A second instance while the first is open, as when a project uses Wolf Shaper on two tracks.
     {
         Session second;
         const bool secondOk = second.open(factory, ids);
