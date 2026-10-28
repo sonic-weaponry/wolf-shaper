@@ -1,0 +1,331 @@
+# Builds the Wolf Shaper VST3 with DPF's Makefiles (macOS universal, Linux x64, Windows x64) and runs the checks in
+# ci/ on our build and on the official v1.0.2 release side by side: class IDs, parameters, states, and opening the
+# plugin the way a host does. See ci/README.md.
+name: build
+
+on:
+  push:
+    branches: ['sw/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Only the VST3. Every format links the same plugin objects, so leaving the others out doesn't change the VST3.
+  VST3_ONLY: BUILD_VST3=true BUILD_LV2=false BUILD_VST2=false BUILD_CLAP=false BUILD_JACK=false BUILD_DSSI=false BUILD_LADSPA=false
+  VST3_SDK_TAG: v3.8.1_build_84
+  OFFICIAL_RELEASE: v1.0.2
+  # sha256 of the official v1.0.2 binaries the checks load. The Windows one is also the reference install's.
+  OFFICIAL_WINDOWS_SHA256: 35ad3db823fba86dfd1f35b827f1285496ce306695de483c54ac447ce6e2d699
+  OFFICIAL_MAC_SHA256: a0698fcfdf6f99a3a611d686ca72f3d81f5f4b0ec903d46cfac135654c12a95a
+  OFFICIAL_LINUX_SHA256: ''
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Runner and toolchain
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+          clang --version | head -n 1
+          git -C dpf log -1 --format='dpf %H %s'
+
+      # The flags DISTRHO/dpf-makefile-action used for the official v1.0.2 macOS release (target macos-universal).
+      - name: Build the VST3 (universal)
+        id: build
+        env:
+          CFLAGS: -arch x86_64 -arch arm64 -DMAC_OS_X_VERSION_MAX_ALLOWED=MAC_OS_X_VERSION_10_12 -DMAC_OS_X_VERSION_MIN_REQUIRED=MAC_OS_X_VERSION_10_12 -mmacosx-version-min=10.12 -mtune=generic -msse -msse2
+          CXXFLAGS: -arch x86_64 -arch arm64 -DMAC_OS_X_VERSION_MAX_ALLOWED=MAC_OS_X_VERSION_10_12 -DMAC_OS_X_VERSION_MIN_REQUIRED=MAC_OS_X_VERSION_10_12 -mmacosx-version-min=10.12 -mtune=generic -msse -msse2
+          LDFLAGS: -arch x86_64 -arch arm64 -mmacosx-version-min=10.12
+        run: |
+          make $VST3_ONLY features
+          make $VST3_ONLY NOOPT=true -j"$(sysctl -n hw.logicalcpu)" plugins
+
+      - name: Check the binary holds both slices
+        run: |
+          B=bin/wolf-shaper.vst3/Contents/MacOS/wolf-shaper
+          archs=$(lipo -archs "$B")
+          echo "architectures: $archs"
+          case " $archs " in *" x86_64 "*) ;; *) echo "::error::no x86_64 slice"; exit 1 ;; esac
+          case " $archs " in *" arm64 "*) ;; *) echo "::error::no arm64 slice"; exit 1 ;; esac
+          vtool -show-build "$B" | grep -E "architecture|minos|sdk" || true
+          codesign -dv "$B" 2>&1 | grep -E "Format|Identifier|Signature" || true
+          echo "--- files in the bundle"
+          find bin/wolf-shaper.vst3 -type f
+          shasum -a 256 "$B"
+
+      - name: Build the check tool (universal)
+        id: tool
+        run: |
+          git clone -q --depth 1 --branch "$VST3_SDK_TAG" https://github.com/steinbergmedia/vst3_pluginterfaces.git ci/vst3_check/sdk/pluginterfaces
+          cmake -S ci/vst3_check -B ci/vst3_check/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build ci/vst3_check/build --config Release
+          lipo -archs ci/vst3_check/build/vst3_check
+
+      - name: Get the official v1.0.2 macOS release
+        id: official
+        run: |
+          mkdir -p official
+          gh release download "$OFFICIAL_RELEASE" -R wolf-plugins/wolf-shaper -p wolf-shaper-v1.0.2-macos-universal.zip -D official
+          cd official
+          cmake -E tar xf wolf-shaper-v1.0.2-macos-universal.zip
+          hdiutil attach -nobrowse -readonly -mountpoint /tmp/wsdmg ./*.dmg
+          pkgutil --expand-full /tmp/wsdmg/wolf-shaper-AudioPlugins.pkg pkg
+          hdiutil detach /tmp/wsdmg
+          cp -R "$(find pkg/dpf-wolf-shaper-vst3bundles.pkg -type d -name wolf-shaper.vst3 | head -n 1)" ./wolf-shaper.vst3
+          echo "--- files in the bundle"
+          find wolf-shaper.vst3 -type f
+          echo "$OFFICIAL_MAC_SHA256  wolf-shaper.vst3/Contents/MacOS/wolf-shaper" | shasum -a 256 -c
+
+      - name: Checks, our build, arm64
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.tool.outcome == 'success' }}
+        run: bash ci/run_checks.sh ci/vst3_check/build/vst3_check bin/wolf-shaper.vst3 ours macos-arm64-ours
+
+      - name: Checks, our build, x86_64 (Rosetta)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.tool.outcome == 'success' }}
+        run: bash ci/run_checks.sh ci/vst3_check/build/vst3_check bin/wolf-shaper.vst3 ours macos-x86_64-ours arch -x86_64
+
+      - name: Checks, official v1.0.2, arm64
+        if: ${{ !cancelled() && steps.official.outcome == 'success' && steps.tool.outcome == 'success' }}
+        run: bash ci/run_checks.sh ci/vst3_check/build/vst3_check official/wolf-shaper.vst3 official macos-arm64-official
+
+      - name: Checks, official v1.0.2, x86_64 (Rosetta)
+        if: ${{ !cancelled() && steps.official.outcome == 'success' && steps.tool.outcome == 'success' }}
+        run: bash ci/run_checks.sh ci/vst3_check/build/vst3_check official/wolf-shaper.vst3 official macos-x86_64-official arch -x86_64
+
+      - name: Pack our build with its licenses and source link
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: bash ci/package_artifact.sh bin dist/wolf-shaper-macos-universal "macOS (universal: Apple Silicon and Intel)"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        with:
+          name: wolf-shaper-vst3-macos-universal
+          path: dist/wolf-shaper-macos-universal
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: check-results-macos
+          path: ci-results
+          retention-days: 30
+          if-no-files-found: ignore
+
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -yqq pkg-config libgl-dev mesa-common-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev > /dev/null
+
+      - name: Runner and toolchain
+        run: |
+          lsb_release -ds
+          uname -m
+          gcc --version | head -n 1
+          make --version | head -n 1
+          git -C dpf log -1 --format='dpf %H %s'
+
+      # Static libgcc and libstdc++, like the official v1.0.2 Linux release (DISTRHO/dpf-makefile-action, linux-x86_64).
+      - name: Build the VST3
+        id: build
+        env:
+          LDFLAGS: -static-libgcc -static-libstdc++
+        run: |
+          make $VST3_ONLY features
+          make $VST3_ONLY -j"$(nproc)" plugins
+          B=bin/wolf-shaper.vst3/Contents/x86_64-linux/wolf-shaper.so
+          ldd "$B"
+          echo "--- files in the bundle"
+          find bin/wolf-shaper.vst3 -type f
+          sha256sum "$B"
+
+      - name: Build the check tool
+        id: tool
+        run: |
+          git clone -q --depth 1 --branch "$VST3_SDK_TAG" https://github.com/steinbergmedia/vst3_pluginterfaces.git ci/vst3_check/sdk/pluginterfaces
+          cmake -S ci/vst3_check -B ci/vst3_check/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build ci/vst3_check/build --config Release
+
+      - name: Get the official v1.0.2 Linux release
+        id: official
+        run: |
+          mkdir -p official
+          gh release download "$OFFICIAL_RELEASE" -R wolf-plugins/wolf-shaper -p wolf-shaper-v1.0.2-linux-x64.zip -D official
+          (cd official && cmake -E tar xf wolf-shaper-v1.0.2-linux-x64.zip)
+          B=$(find official -type d -name wolf-shaper.vst3 -prune | head -n 1)
+          echo "bundle=$B" >> "$GITHUB_OUTPUT"
+          echo "--- files in the bundle"
+          find "$B" -type f
+          sha=$(sha256sum "$B/Contents/x86_64-linux/wolf-shaper.so" | cut -d ' ' -f 1)
+          echo "official Linux binary sha256: $sha"
+          if [ -z "$OFFICIAL_LINUX_SHA256" ]; then
+            echo "::warning::The official Linux binary's sha256 isn't pinned yet: $sha"
+          elif [ "$sha" != "$OFFICIAL_LINUX_SHA256" ]; then
+            echo "::error::The official Linux binary isn't the one pinned in this workflow"
+            exit 1
+          fi
+
+      - name: Checks, our build
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.tool.outcome == 'success' }}
+        run: bash ci/run_checks.sh ci/vst3_check/build/vst3_check bin/wolf-shaper.vst3 ours linux-x64-ours
+
+      - name: Checks, official v1.0.2
+        if: ${{ !cancelled() && steps.official.outcome == 'success' && steps.tool.outcome == 'success' }}
+        run: bash ci/run_checks.sh ci/vst3_check/build/vst3_check "${{ steps.official.outputs.bundle }}" official linux-x64-official
+
+      - name: Self-test (each check must fail on wrong frozen values)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.tool.outcome == 'success' }}
+        run: bash ci/self_test.sh ci/vst3_check/build/vst3_check bin/wolf-shaper.vst3
+
+      - name: Pack our build with its licenses and source link
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: bash ci/package_artifact.sh bin dist/wolf-shaper-linux-x64 "Linux x64"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        with:
+          name: wolf-shaper-vst3-linux-x64
+          path: dist/wolf-shaper-linux-x64
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: check-results-linux
+          path: ci-results
+          retention-days: 30
+          if-no-files-found: ignore
+
+  windows-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: MinGW-w64 cross compiler
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -yqq binutils-mingw-w64-x86-64 g++-mingw-w64-x86-64 mingw-w64 > /dev/null
+          lsb_release -ds
+          x86_64-w64-mingw32-g++ --version | head -n 1
+          git -C dpf log -1 --format='dpf %H %s'
+
+      # Cross-compiled with MinGW-w64, like the official v1.0.2 Windows release (DISTRHO/dpf-makefile-action, win64).
+      - name: Build the VST3 (Windows x64)
+        env:
+          AR: x86_64-w64-mingw32-ar
+          CC: x86_64-w64-mingw32-gcc
+          CXX: x86_64-w64-mingw32-g++
+          PKG_CONFIG: 'false'
+        run: |
+          make $VST3_ONLY features
+          make $VST3_ONLY -j"$(nproc)" plugins
+          B=bin/wolf-shaper.vst3/Contents/x86_64-win/wolf-shaper.vst3
+          echo "--- DLLs it needs"
+          x86_64-w64-mingw32-objdump -p "$B" | grep "DLL Name" || true
+          echo "--- files in the bundle"
+          find bin/wolf-shaper.vst3 -type f
+          sha256sum "$B"
+
+      - name: Pack our build with its licenses and source link
+        run: bash ci/package_artifact.sh bin dist/wolf-shaper-windows-x64 "Windows x64"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wolf-shaper-vst3-windows-x64
+          path: dist/wolf-shaper-windows-x64
+          retention-days: 30
+
+  windows:
+    needs: windows-build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wolf-shaper-vst3-windows-x64
+          path: ours
+
+      - name: Our build
+        run: |
+          echo "--- files in our bundle"
+          find ours/wolf-shaper.vst3 -type f
+          sha256sum ours/wolf-shaper.vst3/Contents/x86_64-win/wolf-shaper.vst3
+
+      - name: Build the check tool
+        id: tool
+        run: |
+          git clone -q --depth 1 --branch "$VST3_SDK_TAG" https://github.com/steinbergmedia/vst3_pluginterfaces.git ci/vst3_check/sdk/pluginterfaces
+          cmake -S ci/vst3_check -B ci/vst3_check/build
+          cmake --build ci/vst3_check/build --config Release
+
+      - name: Get the official v1.0.2 Windows release
+        id: official
+        run: |
+          mkdir -p official
+          gh release download "$OFFICIAL_RELEASE" -R wolf-plugins/wolf-shaper -p "wolf-shaper-v1.0.2+20230515144200-windows-x64.zip" -D official
+          (cd official && cmake -E tar xf "wolf-shaper-v1.0.2+20230515144200-windows-x64.zip")
+          B=$(find official -type d -name wolf-shaper.vst3 -prune | head -n 1)
+          echo "bundle=$B" >> "$GITHUB_OUTPUT"
+          echo "--- files in the bundle"
+          find "$B" -type f
+          echo "$OFFICIAL_WINDOWS_SHA256 *$B/Contents/x86_64-win/wolf-shaper.vst3" | sha256sum -c
+
+      - name: Checks, our build
+        if: ${{ !cancelled() && steps.tool.outcome == 'success' }}
+        run: bash ci/run_checks.sh ci/vst3_check/build/Release/vst3_check.exe ours/wolf-shaper.vst3 ours windows-x64-ours
+
+      - name: Checks, official v1.0.2
+        if: ${{ !cancelled() && steps.official.outcome == 'success' && steps.tool.outcome == 'success' }}
+        run: bash ci/run_checks.sh ci/vst3_check/build/Release/vst3_check.exe "${{ steps.official.outputs.bundle }}" official windows-x64-official
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: check-results-windows
+          path: ci-results
+          retention-days: 30
+          if-no-files-found: ignore
