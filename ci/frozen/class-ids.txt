@@ -1,0 +1,23 @@
+# Frozen VST3 class IDs: what each build must report, as the VST3 SDK's FUID::toString prints them on that platform.
+# Hosts store the component ID in projects and find the plugin by it, so it must never drift. Values measured on the
+# official v1.0.2 releases on Windows, macOS (arm64 and x86_64) and Linux runners.
+#
+# platform  build     class       canonical ID
+windows     official  component   445046206173636C7073577300000000
+windows     official  controller  44504620726C63747073577300000000
+windows     ours      component   445046206173636C7073577300000000
+windows     ours      controller  44504620726C63747073577300000000
+
+# macOS: DPF hands the host the same 16 bytes as on Windows, but the SDK reads them as a COM GUID on Windows only, so
+# the official macOS build reports a different ID, and projects saved on Windows show Wolf Shaper as missing on a Mac
+# (wolf-plugins/wolf-shaper#171). Until the macOS class ID fix lands, our build reproduces the official macOS IDs.
+# The fix changes only the two "macos ours" lines, to the Windows IDs above.
+macos       official  component   2046504473616C637073577300000000
+macos       official  controller  204650446C7274637073577300000000
+macos       ours      component   2046504473616C637073577300000000
+macos       ours      controller  204650446C7274637073577300000000
+
+linux       official  component   2046504473616C637073577300000000
+linux       official  controller  204650446C7274637073577300000000
+linux       ours      component   2046504473616C637073577300000000
+linux       ours      controller  204650446C7274637073577300000000
