@@ -10,7 +10,8 @@
 // hide the other results (ci/run_checks.sh runs all four).
 //
 //   vst3_check ids <bundle> <ours|official> <class-ids.txt>
-//       Class IDs read through the VST3 SDK's own FUID code (what hosts store in projects), against the frozen table.
+//       Class IDs read through the VST3 SDK's own FUID code (what hosts store in projects), against the frozen table,
+//       then again after the module's exit function and a second entry.
 //   vst3_check params <bundle> <parameters.json> [<write to>]
 //       Every parameter the controller lists, plus the state symbol each one is saved under, against the frozen table.
 //   vst3_check states <bundle> <state file>...
@@ -458,7 +459,8 @@ static HostApplication gHost;
 static ComponentHandler gHandler;
 
 // --------------------------------------------------------------------------------------------------------------------
-// The module: loaded once per process, with the platform's entry and exit functions, like a host does.
+// The module: loaded with the platform's entry and exit functions, like a host does. Once per process, except that the
+// ids check enters it a second time.
 
 typedef IPluginFactory*(PLUGIN_API* GetFactoryProc)();
 typedef bool (*ExitProc)();
@@ -1139,6 +1141,30 @@ static bool checkIds(Module& module, const std::string& build, const std::string
     return ok;
 }
 
+// Hosts may call the exit function and later enter the module again without the library being unloaded in between
+// (the VST3 SDK's own hosting code calls bundleExit but never CFBundleUnloadExecutable), so the plugin's static data
+// survives. The IDs must come out the same the second time.
+static bool checkIdsAgain(Module& module, const std::string& bundle, const std::string& build,
+                          const std::string& frozenPath, std::string& detail)
+{
+    const std::string first = detail;
+    module.unload();
+    std::printf("--- again, after the exit function and a second entry (the library stays loaded)\n");
+    if (!module.load(bundle))
+    {
+        detail = "could not enter " + bundle + " a second time";
+        return false;
+    }
+    std::string again;
+    if (!checkIds(module, build, frozenPath, again) || again != first)
+    {
+        detail = "after a second module entry: " + again;
+        return false;
+    }
+    detail = first + ", the same after a second module entry";
+    return true;
+}
+
 // --------------------------------------------------------------------------------------------------------------------
 // Check: parameters
 
@@ -1623,7 +1649,7 @@ int main(int argc, char* argv[])
     else
     {
         if (check == "ids")
-            pass = checkIds(module, argv[3], argv[4], detail);
+            pass = checkIds(module, argv[3], argv[4], detail) && checkIdsAgain(module, bundle, argv[3], argv[4], detail);
         else if (check == "params")
             pass = checkParams(module, argv[3], argc > 4 ? argv[4] : "", detail);
         else if (check == "states")

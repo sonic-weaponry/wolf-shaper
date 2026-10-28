@@ -17,7 +17,7 @@ host sees, so that a fix can change the macOS class ID and provably nothing else
 
 | Check | What it does | Frozen file |
 |---|---|---|
-| `ids` | Reads the class IDs through the VST3 SDK's own FUID code, through all three class-info calls, and compares them with the table for this platform and build | `class-ids.txt` |
+| `ids` | Reads the class IDs through the VST3 SDK's own FUID code, through all three class-info calls, and compares them with the table for this platform and build. Then calls the module's exit function, enters it again with the library still loaded (hosts may do that), and requires the same IDs | `class-ids.txt` |
 | `params` | Opens the component and the controller the way a host does and lists every parameter: VST3 ID, title, units, range, default, steps and their labels, flags. It also measures the symbol each parameter is saved under, by loading a state that changes only that symbol and seeing which parameter moves | `parameters.json` |
 | `states` | Loads each test state into a fresh instance (component `setState`, then controller `setComponentState`, as hosts do) and requires `getState` to give back the same bytes and the controller to show every value under the right ID. Then loads all of them one after another into one instance. A fresh instance must save exactly `default.vst3state` | `states/*.vst3state` |
 | `instance` | Creates the component from its class ID and the controller from `getControllerClassId`, connects them, opens a second instance alongside, and tears everything down. Compares what a host sees (names, vendor, version, categories, buses, latency) with the table | `plugin-info.json` |
