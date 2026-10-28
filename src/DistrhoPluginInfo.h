@@ -40,6 +40,15 @@
 #define DISTRHO_PLUGIN_CLAP_FEATURES "audio-effect", "distortion", "stereo"
 
 /*
+ * macOS: report the VST3 class IDs the Windows build reports, so projects saved on Windows find the plugin on a Mac
+ * (https://github.com/wolf-plugins/wolf-shaper/issues/171). Projects saved on a Mac with the official macOS VST3
+ * then can't find it. Linux keeps its class IDs.
+ */
+#ifdef __APPLE__
+#define DPF_VST3_WINDOWS_COMPATIBLE_UID
+#endif
+
+/*
  * See https://lv2plug.in/ns/lv2core#hardRTCapable
  * I believe this plugin is not hard rt-capable, because the amount of time for a run() call depends on the plugin state.
  */

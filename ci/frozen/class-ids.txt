@@ -10,12 +10,12 @@ windows     ours      controller  44504620726C63747073577300000000
 
 # macOS: DPF hands the host the same 16 bytes as on Windows, but the SDK reads them as a COM GUID on Windows only, so
 # the official macOS build reports a different ID, and projects saved on Windows show Wolf Shaper as missing on a Mac
-# (wolf-plugins/wolf-shaper#171). Until the macOS class ID fix lands, our build reproduces the official macOS IDs.
-# The fix changes only the two "macos ours" lines, to the Windows IDs above.
+# (wolf-plugins/wolf-shaper#171). Our macOS build defines DPF_VST3_WINDOWS_COMPATIBLE_UID (src/DistrhoPluginInfo.h),
+# so it reports the Windows IDs above instead.
 macos       official  component   2046504473616C637073577300000000
 macos       official  controller  204650446C7274637073577300000000
-macos       ours      component   2046504473616C637073577300000000
-macos       ours      controller  204650446C7274637073577300000000
+macos       ours      component   445046206173636C7073577300000000
+macos       ours      controller  44504620726C63747073577300000000
 
 linux       official  component   2046504473616C637073577300000000
 linux       official  controller  204650446C7274637073577300000000
