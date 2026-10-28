@@ -1,0 +1,84 @@
+{
+  "format": "wolf-shaper ci/vst3_check plugin-info 1",
+  "factory": {
+    "get_factory_info": "ok",
+    "vendor": "Patrick Desaulniers",
+    "url": "https://github.com/pdesaulniers/wolf-shaper",
+    "email": "",
+    "flags": 16,
+    "class_count": 2,
+    "set_host_context": "ok"
+  },
+  "classes": [
+    {
+      "index": 0,
+      "get_class_info": "ok",
+      "category": "Audio Module Class",
+      "name": "Wolf Shaper",
+      "cardinality": 2147483647,
+      "class_info_2": {
+        "result": "ok",
+        "name": "Wolf Shaper",
+        "vendor": "Patrick Desaulniers",
+        "version": "1.0.2",
+        "sdk_version": "VST 3.7.4",
+        "sub_categories": "Fx|Distortion|Stereo",
+        "class_flags": 1
+      },
+      "class_info_unicode": {
+        "result": "ok",
+        "name": "Wolf Shaper",
+        "vendor": "Patrick Desaulniers",
+        "version": "1.0.2",
+        "sdk_version": "Travesty 3.7.4",
+        "sub_categories": "Fx|Distortion|Stereo",
+        "class_flags": 1
+      }
+    },
+    {
+      "index": 1,
+      "get_class_info": "ok",
+      "category": "Component Controller Class",
+      "name": "Wolf Shaper",
+      "cardinality": 2147483647,
+      "class_info_2": {
+        "result": "ok",
+        "name": "Wolf Shaper",
+        "vendor": "Patrick Desaulniers",
+        "version": "1.0.2",
+        "sdk_version": "VST 3.7.4",
+        "sub_categories": "Fx|Distortion|Stereo",
+        "class_flags": 1
+      },
+      "class_info_unicode": {
+        "result": "ok",
+        "name": "Wolf Shaper",
+        "vendor": "Patrick Desaulniers",
+        "version": "1.0.2",
+        "sdk_version": "Travesty 3.7.4",
+        "sub_categories": "Fx|Distortion|Stereo",
+        "class_flags": 1
+      }
+    }
+  ],
+  "component": {
+    "also_edit_controller": "no_interface",
+    "audio_processor": "ok",
+    "connection_point": "ok",
+    "buses": [
+      {"media": "audio", "direction": "input", "index": 0, "result": "ok", "name": "Audio Input", "channels": 2, "type": "main", "flags": 1},
+      {"media": "audio", "direction": "output", "index": 0, "result": "ok", "name": "Audio Output", "channels": 2, "type": "main", "flags": 1}
+    ],
+    "bus_arrangement": {"input": 3, "input_result": "ok", "output": 3, "output_result": "ok"},
+    "latency_samples": 0,
+    "tail_samples": 0,
+    "can_process_32bit": "ok",
+    "can_process_64bit": "not_implemented"
+  },
+  "controller": {
+    "connection_point": "ok",
+    "parameter_count": 13,
+    "get_state": {"result": "not_implemented", "bytes": 0},
+    "set_state_empty": "not_implemented"
+  }
+}
