@@ -1,6 +1,6 @@
 # Builds the Wolf Shaper VST3 with DPF's Makefiles (macOS universal, Linux x64, Windows x64) and runs the checks in
 # ci/ on our build and on the official v1.0.2 release side by side: class IDs, parameters, states, opening the plugin
-# the way a host does, and on macOS its editor window. See ci/README.md.
+# the way a host does, on macOS its editor window, and on macOS and Windows the sound. See ci/README.md.
 name: build
 
 on:
@@ -144,6 +144,74 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.tool.outcome == 'success' }}
         timeout-minutes: 5
         run: bash ci/self_test_gui.sh ci/vst3_check/build/vst3_check macos-arm64-ours
+
+      # The sound (ci/README.md): the public test states through the official v1.0.2 and our build, at 44.1 and 48 kHz,
+      # blocks of 512 and 64, on Apple Silicon and Intel (Rosetta). Each render: block 64 must equal block 512.
+      - name: Test signal
+        id: signal
+        run: |
+          python3 ci/make_test_signal.py sound-signal
+          (cd sound-signal && shasum -a 256 -c ../ci/frozen/test-signal.sha256)
+
+      - name: Sound, official v1.0.2, arm64
+        if: ${{ !cancelled() && steps.official.outcome == 'success' && steps.tool.outcome == 'success' && steps.signal.outcome == 'success' }}
+        run: bash ci/run_sound_checks.sh ci/vst3_check/build/vst3_check official/wolf-shaper.vst3 macos-arm64-official sound-signal sound-renders
+
+      - name: Sound, our build, arm64
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.tool.outcome == 'success' && steps.signal.outcome == 'success' }}
+        run: bash ci/run_sound_checks.sh ci/vst3_check/build/vst3_check bin/wolf-shaper.vst3 macos-arm64-ours sound-signal sound-renders
+
+      - name: Sound, official v1.0.2, x86_64 (Rosetta)
+        if: ${{ !cancelled() && steps.official.outcome == 'success' && steps.tool.outcome == 'success' && steps.signal.outcome == 'success' }}
+        run: bash ci/run_sound_checks.sh ci/vst3_check/build/vst3_check official/wolf-shaper.vst3 macos-x86_64-official sound-signal sound-renders arch -x86_64
+
+      - name: Sound, our build, x86_64 (Rosetta)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.tool.outcome == 'success' && steps.signal.outcome == 'success' }}
+        run: bash ci/run_sound_checks.sh ci/vst3_check/build/vst3_check bin/wolf-shaper.vst3 macos-x86_64-ours sound-signal sound-renders arch -x86_64
+
+      # Report only until the first results have been reviewed: the residual of each pair, no limit yet.
+      - name: Sound, null tests on macOS (report only)
+        if: ${{ !cancelled() && steps.signal.outcome == 'success' }}
+        run: |
+          r=sound-renders
+          python3 ci/null_test.py --label "arm64: our build against the official v1.0.2" --dirs $r/macos-arm64-official $r/macos-arm64-ours
+          python3 ci/null_test.py --label "x86_64: our build against the official v1.0.2" --dirs $r/macos-x86_64-official $r/macos-x86_64-ours
+          python3 ci/null_test.py --label "our build: x86_64 against arm64" --dirs $r/macos-arm64-ours $r/macos-x86_64-ours
+          python3 ci/null_test.py --label "official v1.0.2: x86_64 against arm64" --dirs $r/macos-arm64-official $r/macos-x86_64-official
+
+      # DPF reads saved values with atof, which follows the process's C locale (ci/README.md). Report only for now.
+      - name: Locale, de_DE.UTF-8 (report only)
+        if: ${{ !cancelled() && steps.tool.outcome == 'success' }}
+        run: |
+          for build in official ours; do
+            bundle=bin/wolf-shaper.vst3
+            [ "$build" = official ] && bundle=official/wolf-shaper.vst3
+            for launcher in "" "arch -x86_64"; do
+              out=$($launcher ci/vst3_check/build/vst3_check locale "$bundle" de_DE.UTF-8 ci/frozen/states/*.vst3state 2>&1) || true
+              echo "::group::$build ${launcher:-arm64}"
+              echo "$out"
+              echo "::endgroup::"
+              echo "$out" | grep '^RESULT' | sed "s/^/$build ${launcher:-arm64}: /"
+            done
+          done
+
+      - name: Keep our block-512 renders for the comparison with Windows
+        if: ${{ !cancelled() && steps.signal.outcome == 'success' }}
+        run: |
+          mkdir -p sound-upload
+          for arch in arm64 x86_64; do
+            [ -d sound-renders/macos-$arch-ours ] || continue
+            mkdir -p sound-upload/macos-$arch-ours
+            cp sound-renders/macos-$arch-ours/*-512.wav sound-upload/macos-$arch-ours/
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && steps.signal.outcome == 'success' }}
+        with:
+          name: sound-renders-macos
+          path: sound-upload
+          retention-days: 5
+          if-no-files-found: ignore
 
       - name: Pack our build with its licenses and source link
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
@@ -356,6 +424,44 @@ jobs:
         if: ${{ !cancelled() && steps.official.outcome == 'success' && steps.tool.outcome == 'success' }}
         run: bash ci/run_checks.sh ci/vst3_check/build/Release/vst3_check.exe "${{ steps.official.outputs.bundle }}" official windows-x64-official
 
+      # The sound, as on macOS (ci/README.md). The official v1.0.2's renders are the Windows side of the comparison.
+      - name: Test signal
+        id: signal
+        run: |
+          python ci/make_test_signal.py sound-signal
+          (cd sound-signal && sha256sum -c ../ci/frozen/test-signal.sha256)
+
+      - name: Sound, official v1.0.2
+        if: ${{ !cancelled() && steps.official.outcome == 'success' && steps.tool.outcome == 'success' && steps.signal.outcome == 'success' }}
+        run: bash ci/run_sound_checks.sh ci/vst3_check/build/Release/vst3_check.exe "${{ steps.official.outputs.bundle }}" windows-x64-official sound-signal sound-renders
+
+      - name: Sound, our build
+        if: ${{ !cancelled() && steps.tool.outcome == 'success' && steps.signal.outcome == 'success' }}
+        run: bash ci/run_sound_checks.sh ci/vst3_check/build/Release/vst3_check.exe ours/wolf-shaper.vst3 windows-x64-ours sound-signal sound-renders
+
+      - name: Sound, our build against the official v1.0.2 (report only)
+        if: ${{ !cancelled() && steps.signal.outcome == 'success' }}
+        run: |
+          python ci/null_test.py --label "Windows: our build against the official v1.0.2" --dirs sound-renders/windows-x64-official sound-renders/windows-x64-ours
+
+      - name: Keep the block-512 renders for the comparison with macOS
+        if: ${{ !cancelled() && steps.signal.outcome == 'success' }}
+        run: |
+          mkdir -p sound-upload
+          for build in official ours; do
+            [ -d sound-renders/windows-x64-$build ] || continue
+            mkdir -p sound-upload/windows-x64-$build
+            cp sound-renders/windows-x64-$build/*-512.wav sound-upload/windows-x64-$build/
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && steps.signal.outcome == 'success' }}
+        with:
+          name: sound-renders-windows
+          path: sound-upload
+          retention-days: 5
+          if-no-files-found: ignore
+
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
@@ -363,3 +469,34 @@ jobs:
           path: ci-results
           retention-days: 30
           if-no-files-found: ignore
+
+  # The public test states, macOS against Windows: our macOS build (arm64 and x86_64) against the official v1.0.2 and
+  # our build on Windows, all rendered with ci/vst3_check at block 512. Report only until the first results have been
+  # reviewed.
+  sound-compare:
+    needs: [macos, windows]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sound-renders-macos
+          path: renders
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sound-renders-windows
+          path: renders
+
+      - name: macOS against Windows (report only)
+        run: |
+          for arch in arm64 x86_64; do
+            python3 ci/null_test.py --label "our macOS build ($arch) against the official v1.0.2 on Windows" --dirs renders/windows-x64-official renders/macos-$arch-ours
+          done
+          python3 ci/null_test.py --label "our macOS build (arm64) against our Windows build" --dirs renders/windows-x64-ours renders/macos-arm64-ours

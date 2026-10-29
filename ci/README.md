@@ -21,6 +21,7 @@ host sees, so that a fix can change the macOS class ID and provably nothing else
 | `params` | Opens the component and the controller the way a host does and lists every parameter: VST3 ID, title, units, range, default, steps and their labels, flags. It also measures the symbol each parameter is saved under, by loading a state that changes only that symbol and seeing which parameter moves | `parameters.json` |
 | `states` | Loads each test state into a fresh instance (component `setState`, then controller `setComponentState`, as hosts do) and requires `getState` to give back the same bytes and the controller to show every value under the right ID. Then loads all of them one after another into one instance. A fresh instance must save exactly `default.vst3state` | `states/*.vst3state` |
 | `instance` | Creates the component from its class ID and the controller from `getControllerClassId`, connects them, opens a second instance alongside, and tears everything down. Compares what a host sees (names, vendor, version, categories, buses, latency) with the table | `plugin-info.json` |
+| `render`, `locale` | The sound and the locale check, below | `test-signal.sha256` |
 
 `ci/run_checks.sh` runs all four on one bundle. A check also fails when DPF prints an assertion or a warning, because a
 host that follows the VST3 rules never triggers one. `ci/self_test.sh` proves that each check can fail: it feeds them
@@ -53,6 +54,34 @@ window visible. `ci/self_test_gui.sh` proves that the two checks can fail: a bla
 the blank rule, and the pictures of two different states, or of one state before and after the host turned Wet, must
 not match.
 
+## The sound
+A fix for the class ID must not change how Wolf Shaper sounds. The sound checks play one test signal through our
+build and the official v1.0.2 with each public test state loaded, and null the renders against each other: subtract
+one from the other and measure what's left.
+
+| Tool | What it does |
+|---|---|
+| `ci/make_test_signal.py` | The test signal, one mono 32-bit float WAV per sample rate (44.1 and 48 kHz, 8.175 s): a log sine sweep, a 110 Hz sine stepped from -40 to +3 dBFS, white and pink noise bursts, and silence between them. Made from fixed formulas and a fixed noise seed; `frozen/test-signal.sha256` pins the files, and every runner checks it before rendering |
+| `vst3_check render` | Opens the plugin as a host does, sets up 32-bit float processing at the signal's rate and the given block size, loads the state (component `setState`, controller `setComponentState`), activates the plugin, plays 10 s of silence, then the signal (mono to both channels), and writes the output as a 32-bit float stereo WAV. Fails on NaN or infinity |
+| `ci/run_sound_checks.sh` | Renders every public test state at both rates in blocks of 512 and 64. The two block sizes must give bit-identical output: Wolf Shaper works sample by sample |
+| `ci/null_test.py` | Per pair of renders: "bit-identical", or the residual's peak and RMS in dBFS and where its peak is |
+| `vst3_check locale` | Loads each state in the "C" locale and in de_DE.UTF-8 (decimal comma) and compares the values the controller shows and the state saved back. DPF a4c83bfd reads saved values with `atof` and writes them with printf-style formatting, both of which follow the C locale the host process runs in |
+
+On macOS both builds render natively on Apple Silicon and through Rosetta as Intel code; on Windows the same with the
+official v1.0.2 and our Windows build. The `sound-compare` job nulls our macOS renders against the Windows ones. The
+null tests and the locale check report without failing the build until their results have been reviewed and limits
+set.
+
+Two facts about Wolf Shaper v1.0.2 that the renders have to respect:
+- **The knobs glide.** After a state loads, Pre Gain, Wet, Post Gain and the warp amounts glide to their new values
+  (a 20 Hz one-pole), and the DC remover settles slowly, so every render starts with 10 s of silence.
+- **The glide stops a few hundred float steps short of the value**, and where exactly depends on the glide speed. That
+  speed is set from the sample rate the plugin knows when a state sets the Oversample knob, and isn't updated when the
+  host changes the rate afterwards. A host that loads the state before `setupProcessing` therefore renders slightly
+  differently from one that loads it after: about -110 dBFS, and more where the signal crosses a sharp corner of a
+  curve (up to -34 dBFS for a few samples with the nine-point test curve). It's the same for every build; renders are
+  only comparable in the same call order. `vst3_check render` sets up processing first, then loads the state.
+
 ## The frozen files
 - `class-ids.txt`: the IDs measured on the official v1.0.2 releases, per platform.
 - `parameters.json` and `plugin-info.json`: generated from the official Windows v1.0.2 release on the Windows runner,
@@ -70,6 +99,8 @@ cmake -S ci/vst3_check -B ci/vst3_check/build -DCMAKE_BUILD_TYPE=Release
 cmake --build ci/vst3_check/build --config Release
 bash ci/run_checks.sh ci/vst3_check/build/vst3_check bin/wolf-shaper.vst3 ours local
 GUI_MAX_DIFFERENT_SHARE=0.0001 bash ci/run_gui_checks.sh ci/vst3_check/build/vst3_check bin/wolf-shaper.vst3 local -
+python3 ci/make_test_signal.py sound-signal
+bash ci/run_sound_checks.sh ci/vst3_check/build/vst3_check bin/wolf-shaper.vst3 local sound-signal sound-renders
 ```
 Run them from the repository root. On Windows the tool is `ci/vst3_check/build/Release/vst3_check.exe`. The GUI checks
 run on macOS only, in a logged-in session, and macOS asks once for permission to record the screen.
