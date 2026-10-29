@@ -69,8 +69,12 @@ one from the other and measure what's left.
 
 On macOS both builds render natively on Apple Silicon and through Rosetta as Intel code; on Windows the same with the
 official v1.0.2 and our Windows build. The `sound-compare` job nulls our macOS renders against the Windows ones. The
-null tests and the locale check report without failing the build until their results have been reviewed and limits
-set.
+limits come from the reviewed results: on Windows our build must equal the official v1.0.2 bit for bit; our macOS build
+(arm64 and x86_64) must null against the official Windows build below -100 dBFS (measured: -110.5 dBFS at worst, most
+states bit-identical or below -129 dBFS), and its x86_64 slice against the official macOS build and against its own
+arm64 slice below -100 dBFS too. Our arm64 slice is built without fused multiply-adds (src/Makefile) so that it
+computes like the Windows build; the official macOS build fuses them, so that pair (up to -76 dBFS apart on the sharp
+test curves) is only reported. The locale check only reports: the official v1.0.2 behaves the same.
 
 Two facts about Wolf Shaper v1.0.2 that the renders have to respect:
 - **The knobs glide.** After a state loads, Pre Gain, Wet, Post Gain and the warp amounts glide to their new values

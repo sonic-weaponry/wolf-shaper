@@ -170,17 +170,20 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.tool.outcome == 'success' && steps.signal.outcome == 'success' }}
         run: bash ci/run_sound_checks.sh ci/vst3_check/build/vst3_check bin/wolf-shaper.vst3 macos-x86_64-ours sound-signal sound-renders arch -x86_64
 
-      # Report only until the first results have been reviewed: the residual of each pair, no limit yet.
-      - name: Sound, null tests on macOS (report only)
+      # Limits from the reviewed results (ci/README.md, "The sound"). Our arm64 slice is built without fused
+      # multiply-adds and the official one with them, so that pair is reported, not limited: its reference is Windows
+      # (the sound-compare job).
+      - name: Sound, null tests on macOS
         if: ${{ !cancelled() && steps.signal.outcome == 'success' }}
         run: |
           r=sound-renders
-          python3 ci/null_test.py --label "arm64: our build against the official v1.0.2" --dirs $r/macos-arm64-official $r/macos-arm64-ours
-          python3 ci/null_test.py --label "x86_64: our build against the official v1.0.2" --dirs $r/macos-x86_64-official $r/macos-x86_64-ours
-          python3 ci/null_test.py --label "our build: x86_64 against arm64" --dirs $r/macos-arm64-ours $r/macos-x86_64-ours
-          python3 ci/null_test.py --label "official v1.0.2: x86_64 against arm64" --dirs $r/macos-arm64-official $r/macos-x86_64-official
+          python3 ci/null_test.py --limit -100 --label "x86_64: our build against the official v1.0.2" --dirs $r/macos-x86_64-official $r/macos-x86_64-ours
+          python3 ci/null_test.py --limit -100 --label "our build: x86_64 against arm64" --dirs $r/macos-arm64-ours $r/macos-x86_64-ours
+          python3 ci/null_test.py --label "arm64: our build against the official v1.0.2 (report only)" --dirs $r/macos-arm64-official $r/macos-arm64-ours
+          python3 ci/null_test.py --label "official v1.0.2: x86_64 against arm64 (report only)" --dirs $r/macos-arm64-official $r/macos-x86_64-official
 
-      # DPF reads saved values with atof, which follows the process's C locale (ci/README.md). Report only for now.
+      # DPF reads saved values with atof, which follows the process's C locale (ci/README.md). Report only: the
+      # official v1.0.2 behaves the same, and whether to change it is a separate decision.
       - name: Locale, de_DE.UTF-8 (report only)
         if: ${{ !cancelled() && steps.tool.outcome == 'success' }}
         run: |
@@ -441,10 +444,10 @@ jobs:
         if: ${{ !cancelled() && steps.tool.outcome == 'success' && steps.signal.outcome == 'success' }}
         run: bash ci/run_sound_checks.sh ci/vst3_check/build/Release/vst3_check.exe ours/wolf-shaper.vst3 windows-x64-ours sound-signal sound-renders
 
-      - name: Sound, our build against the official v1.0.2 (report only)
+      - name: Sound, our build against the official v1.0.2 (bit for bit)
         if: ${{ !cancelled() && steps.signal.outcome == 'success' }}
         run: |
-          python ci/null_test.py --label "Windows: our build against the official v1.0.2" --dirs sound-renders/windows-x64-official sound-renders/windows-x64-ours
+          python ci/null_test.py --identical --label "Windows: our build against the official v1.0.2" --dirs sound-renders/windows-x64-official sound-renders/windows-x64-ours
 
       - name: Keep the block-512 renders for the comparison with macOS
         if: ${{ !cancelled() && steps.signal.outcome == 'success' }}
@@ -539,8 +542,8 @@ jobs:
           if-no-files-found: error
 
   # The public test states, macOS against Windows: our macOS build (arm64 and x86_64) against the official v1.0.2 and
-  # our build on Windows, all rendered with ci/vst3_check at block 512. Report only until the first results have been
-  # reviewed.
+  # our build on Windows, all rendered with ci/vst3_check at block 512. Every residual must stay below -100 dBFS
+  # (measured: -110.5 dBFS at worst).
   sound-compare:
     needs: [macos, windows]
     if: ${{ !cancelled() }}
@@ -562,9 +565,9 @@ jobs:
           name: sound-renders-windows
           path: renders
 
-      - name: macOS against Windows (report only)
+      - name: macOS against Windows
         run: |
           for arch in arm64 x86_64; do
-            python3 ci/null_test.py --label "our macOS build ($arch) against the official v1.0.2 on Windows" --dirs renders/windows-x64-official renders/macos-$arch-ours
+            python3 ci/null_test.py --limit -100 --label "our macOS build ($arch) against the official v1.0.2 on Windows" --dirs renders/windows-x64-official renders/macos-$arch-ours
           done
-          python3 ci/null_test.py --label "our macOS build (arm64) against our Windows build" --dirs renders/windows-x64-ours renders/macos-arm64-ours
+          python3 ci/null_test.py --limit -100 --label "our macOS build (arm64) against our Windows build" --dirs renders/windows-x64-ours renders/macos-arm64-ours
