@@ -35,9 +35,10 @@ jobs:
         shell: bash
     env:
       GH_TOKEN: ${{ github.token }}
-      # How much of an editor photo may differ from the official v1.0.2's photo of the same state: the share of pixels
-      # with a color channel more than 1/8 of full scale apart (ci/README.md). Provisional until measured.
-      GUI_MAX_DIFFERENT_SHARE: '0.01'
+      # How much of the editor's picture may differ from the official v1.0.2's picture of the same state: the share of
+      # pixels with a color channel more than 1/8 of full scale apart (ci/README.md). Measured: none differ at all (CI
+      # run 40795830121). 0.01 % allows about 40 of the 404,482 pixels.
+      GUI_MAX_DIFFERENT_SHARE: '0.0001'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -115,9 +116,10 @@ jobs:
         if: ${{ !cancelled() && steps.official.outcome == 'success' && steps.tool.outcome == 'success' }}
         run: bash ci/run_checks.sh ci/vst3_check/build/vst3_check official/wolf-shaper.vst3 official macos-x86_64-official arch -x86_64
 
-      # The editor window, opened as a host does and photographed (public test states only). The official v1.0.2 goes
-      # first so that ours can be compared with it. This runner is a virtual machine without a GPU: OpenGL there is
-      # Apple's software renderer, so these photos can't speak for a real Mac's graphics driver.
+      # The editor, opened in a window as a host does (public test states only). What it drew into its OpenGL buffer
+      # is checked; the window is photographed for the record. This runner is a virtual machine without a GPU: OpenGL
+      # there is Apple's software renderer and the window itself stays white for every build (ci/README.md). The
+      # official v1.0.2 goes first so that ours can be compared with it.
       - name: GUI, official v1.0.2, arm64
         if: ${{ !cancelled() && steps.official.outcome == 'success' && steps.tool.outcome == 'success' }}
         timeout-minutes: 5

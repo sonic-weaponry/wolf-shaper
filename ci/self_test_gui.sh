@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Proves the GUI checks can fail: a black picture and a flat gray one must fail the blank-photo rule while a real photo
-# passes, and a photo must match itself while the photos of two different states must not match.
+# Proves the GUI checks can fail: a black picture and a flat gray one must fail the blank-picture rule while a real one
+# passes, and a picture must match itself while the pictures of two different states, or of the same state before and
+# after the host turned Wet, must not match.
 #
 # Usage: ci/self_test_gui.sh <vst3_check> <label>
-#   Run it from the repository root on macOS with python3, after ci/run_gui_checks.sh has put the photos in
+#   Run it from the repository root on macOS with python3, after ci/run_gui_checks.sh has put the pictures in
 #   ci-results/<label>/gui/. Uses GUI_MAX_DIFFERENT_SHARE like ci/run_gui_checks.sh.
 
 tool=$1
-photos=ci-results/$2/gui
+pictures=ci-results/$2/gui
 max_share=${GUI_MAX_DIFFERENT_SHARE:?set GUI_MAX_DIFFERENT_SHARE, see ci/README.md}
 dir=ci-results/self-test-gui
 mkdir -p "$dir"
@@ -52,12 +53,15 @@ EOF
 
 expect fail "a black picture" image "$dir/black.png"
 expect fail "a flat gray picture" image "$dir/gray.png"
-expect pass "a photo of the editor" image "$photos/default.png"
-expect pass "a photo compared with itself" compare "$photos/default.png" "$photos/default.png" "$max_share"
-expect fail "photos of two different states" compare "$photos/default.png" "$photos/multipoint-curve.png" "$max_share"
+expect pass "a picture of the editor" image "$pictures/default.png"
+expect pass "a picture compared with itself" compare "$pictures/default.png" "$pictures/default.png" "$max_share"
+expect fail "pictures of two different states" \
+    compare "$pictures/default.png" "$pictures/multipoint-curve.png" "$max_share"
+expect fail "the same state before and after the host turned Wet" \
+    compare "$pictures/multipoint-curve.png" "$pictures/multipoint-curve-wet-0.25.png" "$max_share"
 
 if [ $failed -ne 0 ]; then
     echo "GUI SELF-TEST FAILED: a GUI check did not react the way it should"
     exit 1
 fi
-echo "GUI SELF-TEST PASSED: the blank-photo rule and the photo comparison fail on wrong pictures and pass on right ones"
+echo "GUI SELF-TEST PASSED: the blank-picture rule and the comparison fail on wrong pictures and pass on right ones"
