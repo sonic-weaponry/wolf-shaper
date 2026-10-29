@@ -472,6 +472,72 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
+  # Private states (saved by users of the plugin) through our macOS build, for the null test against Windows. They come
+  # from the private-tests environment, which only sw/* branches can use and which pull requests never reach. Nothing
+  # readable leaves the job: ci/run_private_sound.sh keeps every render and log in a temporary folder, encrypts them
+  # to a public key, and prints counts only.
+  macos-private:
+    needs: macos
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && github.repository == 'sonic-weaponry/wolf-shaper' }}
+    runs-on: macos-latest
+    environment: private-tests
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wolf-shaper-vst3-macos-universal
+          path: ours
+
+      - name: Our build (from the macos job)
+        run: |
+          chmod +x ours/wolf-shaper.vst3/Contents/MacOS/wolf-shaper
+          shasum -a 256 ours/wolf-shaper.vst3/Contents/MacOS/wolf-shaper
+          command -v gpg >/dev/null || brew install gnupg
+          gpg --version | head -n 1
+
+      - name: Build the check tool (universal)
+        run: |
+          git clone -q --depth 1 --branch "$VST3_SDK_TAG" https://github.com/steinbergmedia/vst3_pluginterfaces.git ci/vst3_check/sdk/pluginterfaces
+          cmake -S ci/vst3_check -B ci/vst3_check/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build ci/vst3_check/build --config Release
+
+      - name: Get the official v1.0.2 macOS release
+        run: |
+          mkdir -p official
+          gh release download "$OFFICIAL_RELEASE" -R wolf-plugins/wolf-shaper -p wolf-shaper-v1.0.2-macos-universal.zip -D official
+          cd official
+          cmake -E tar xf wolf-shaper-v1.0.2-macos-universal.zip
+          hdiutil attach -nobrowse -readonly -mountpoint /tmp/wsdmg ./*.dmg
+          pkgutil --expand-full /tmp/wsdmg/wolf-shaper-AudioPlugins.pkg pkg
+          hdiutil detach /tmp/wsdmg
+          cp -R "$(find pkg/dpf-wolf-shaper-vst3bundles.pkg -type d -name wolf-shaper.vst3 | head -n 1)" ./wolf-shaper.vst3
+          echo "$OFFICIAL_MAC_SHA256  wolf-shaper.vst3/Contents/MacOS/wolf-shaper" | shasum -a 256 -c
+
+      - name: Test signal
+        run: |
+          python3 ci/make_test_signal.py sound-signal
+          (cd sound-signal && shasum -a 256 -c ../ci/frozen/test-signal.sha256)
+
+      - name: Private states (results leave encrypted)
+        env:
+          PRIVATE_STATES: ${{ secrets.PRIVATE_STATES }}
+          RENDER_PUBLIC_KEY: ${{ secrets.RENDER_PUBLIC_KEY }}
+        run: bash ci/run_private_sound.sh ci/vst3_check/build/vst3_check ours/wolf-shaper.vst3 official/wolf-shaper.vst3 sound-signal "$RUNNER_TEMP/private-results.tar.gz.gpg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: private-results-encrypted
+          path: ${{ runner.temp }}/private-results.tar.gz.gpg
+          retention-days: 3
+          if-no-files-found: error
+
   # The public test states, macOS against Windows: our macOS build (arm64 and x86_64) against the official v1.0.2 and
   # our build on Windows, all rendered with ci/vst3_check at block 512. Report only until the first results have been
   # reviewed.
