@@ -152,6 +152,11 @@ LINK_FLAGS += -lpthread
 # oversampling filters then come out as NaN or as a different filter. The compilers of the official v1.0.2 kept it.
 $(BUILD_DIR)/../libs/DSPFilters/source/%.cpp.o: BUILD_CXX_FLAGS += -fno-finite-math-only
 
+# No fused multiply-adds. Under -ffast-math, clang fuses a * b + c into one rounding on Apple Silicon, while the x86_64
+# builds (SSE2) round twice; Wolf Shaper's sharp curves can turn that last-bit difference into an audible-on-a-meter
+# one. Off, the arm64 slice computes like the official Windows build.
+BASE_FLAGS += -ffp-contract=off
+
 ifeq ($(PARANOID_MODE),true)
 BASE_FLAGS += -Wall -Wextra -Werror
 endif
