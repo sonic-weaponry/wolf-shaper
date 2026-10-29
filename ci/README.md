@@ -26,6 +26,26 @@ host sees, so that a fix can change the macOS class ID and provably nothing else
 host that follows the VST3 rules never triggers one. `ci/self_test.sh` proves that each check can fail: it feeds them
 deliberately wrong frozen values and requires a failure, and the untouched values and requires a pass.
 
+## The editor window (macOS)
+Mac users reported Wolf Shaper's window staying blank for builds of newer source (wolf-plugins/wolf-shaper#176, where
+DPF prints "Failed to create NanoVG context, expect a black screen"). `ci/run_gui_checks.sh` checks the window on the
+macOS runner, natively and as Intel code through Rosetta:
+
+| Check | What it does |
+|---|---|
+| `gui` | Loads a test state into the component and the controller, opens the editor the way the VST3 SDK's own editor host does (`createView`, `setFrame`, `getSize`, a window of that size, `attached`), lets it run for 3 seconds, and photographs the window with Apple's `screencapture`. The photo must not be blank: no color may cover 98 % or more of it, and it must have at least 32 colors. With the nine-point test curve, the host then sets Wet to 0.25 with the window open, as a rack's macro does, and a second photo must show the knob move |
+| `compare` | Each photo of our build against the official v1.0.2's photo of the same state, taken on the same runner just before: the same size, and at most `GUI_MAX_DIFFERENT_SHARE` of the pixels may differ by more than 1/8 of full scale in a color channel |
+
+The photos land in `ci-results/<label>/gui/`: the editor area as `<state>.png`, the whole window as `<state>-window.png`,
+and on a failure the whole screen as `<state>-screen.png`. The `gui` log also records what the editor drew with: the
+OpenGL renderer, whether the "accelerated" pixel format the editor asks for was granted, the screen's scale and whether
+macOS considered the window visible. `ci/self_test_gui.sh` proves that the two checks can fail: a black and a flat gray
+picture must fail the blank rule, and the photos of two different states must not match.
+
+What the runner can't show: GitHub's macOS runners are virtual machines without a GPU, so OpenGL runs on Apple's
+software renderer there, not a real Mac's graphics driver. The comparison with the official release on the same
+machine is what the photos prove.
+
 ## The frozen files
 - `class-ids.txt`: the IDs measured on the official v1.0.2 releases, per platform.
 - `parameters.json` and `plugin-info.json`: generated from the official Windows v1.0.2 release on the Windows runner,
@@ -42,8 +62,10 @@ git clone --depth 1 --branch v3.8.1_build_84 https://github.com/steinbergmedia/v
 cmake -S ci/vst3_check -B ci/vst3_check/build -DCMAKE_BUILD_TYPE=Release
 cmake --build ci/vst3_check/build --config Release
 bash ci/run_checks.sh ci/vst3_check/build/vst3_check bin/wolf-shaper.vst3 ours local
+GUI_MAX_DIFFERENT_SHARE=0.01 bash ci/run_gui_checks.sh ci/vst3_check/build/vst3_check bin/wolf-shaper.vst3 local -
 ```
-Run them from the repository root. On Windows the tool is `ci/vst3_check/build/Release/vst3_check.exe`.
+Run them from the repository root. On Windows the tool is `ci/vst3_check/build/Release/vst3_check.exe`. The GUI checks
+run on macOS only, in a logged-in session, and macOS asks once for permission to record the screen.
 
 ## Third-party code
 The check tool uses Steinberg's VST3 SDK interfaces (vst3_pluginterfaces, MIT license since VST 3.8), cloned at build
