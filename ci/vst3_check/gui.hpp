@@ -55,13 +55,13 @@ void guiCaptureScreen(const std::string& path);
 // Other pictures of what the editor drew, for when the photo shows nothing: what its OpenGL context holds in the front
 // and back buffers (glReadPixels), and what AppKit draws of the window's content view itself (cacheDisplayInRect).
 // Each has a short name, and either a picture or the reason there is none.
-struct Picture
+struct EditorPicture
 {
     std::string name;
     Image image;
     std::string error;
 };
-std::vector<Picture> guiEditorPictures();
+std::vector<EditorPicture> guiEditorPictures();
 
 bool guiWritePng(const std::string& path, const Image& image, std::string& error);
 

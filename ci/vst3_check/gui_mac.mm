@@ -322,23 +322,23 @@ static bool readOpenGL(NSOpenGLView* view, GLenum buffer, Image& image, std::str
     return true;
 }
 
-std::vector<Picture> guiEditorPictures()
+std::vector<EditorPicture> guiEditorPictures()
 {
-    std::vector<Picture> pictures;
+    std::vector<EditorPicture> pictures;
     if (gWindow == nil)
         return pictures;
     if (NSOpenGLView* view = findOpenGLView([gWindow contentView]))
     {
-        Picture front{"gl-front", Image(), ""};
+        EditorPicture front{"gl-front", Image(), ""};
         readOpenGL(view, GL_FRONT, front.image, front.error);
         pictures.push_back(front);
-        Picture back{"gl-back", Image(), ""};
+        EditorPicture back{"gl-back", Image(), ""};
         readOpenGL(view, GL_BACK, back.image, back.error);
         pictures.push_back(back);
     }
 
     NSView* content = [gWindow contentView];
-    Picture cache{"appkit", Image(), ""};
+    EditorPicture cache{"appkit", Image(), ""};
     NSBitmapImageRep* rep = [content bitmapImageRepForCachingDisplayInRect:[content bounds]];
     if (rep == nil)
     {

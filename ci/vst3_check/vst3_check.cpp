@@ -2083,7 +2083,7 @@ static bool photograph(const std::string& path, Image& image, std::string& error
 // the photo with their numbers, for when the photo shows nothing.
 static void savePictures(const std::string& photoPath)
 {
-    for (const Picture& picture : guiEditorPictures())
+    for (const EditorPicture& picture : guiEditorPictures())
     {
         const std::string path = withSuffix(photoPath, "-" + picture.name);
         std::string error = picture.error;
