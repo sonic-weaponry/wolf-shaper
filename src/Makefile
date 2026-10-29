@@ -147,6 +147,11 @@ BASE_FLAGS += $(CUSTOM_DEFINES)
 
 LINK_FLAGS += -lpthread
 
+# DSPFilters marks the analog low-pass zeros as lying at infinity and looks for them with `c == infinity()`
+# (PoleFilter.cpp). -ffast-math includes -ffinite-math-only, which lets current GCC and clang drop that check, and the
+# oversampling filters then come out as NaN or as a different filter. The compilers of the official v1.0.2 kept it.
+$(BUILD_DIR)/../libs/DSPFilters/source/%.cpp.o: BUILD_CXX_FLAGS += -fno-finite-math-only
+
 ifeq ($(PARANOID_MODE),true)
 BASE_FLAGS += -Wall -Wextra -Werror
 endif
