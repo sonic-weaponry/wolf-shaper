@@ -20,14 +20,14 @@
 //   vst3_check instance <bundle> <plugin-info.json> [<write to>]
 //       Creates the component from its class ID and the controller from getControllerClassId, connects them as a host
 //       does, and compares what a host sees (names, versions, buses) with the frozen table.
-//   vst3_check gui <bundle> <state file> <photo.png> [<wet> <second photo.png>]   (macOS)
-//       Loads the state, opens the editor in a window the way a host does, photographs it and requires a photo that
-//       isn't blank. With <wet>, the host then sets the Wet parameter to that normalized value with the window open,
-//       and the second photo must show the change.
-//   vst3_check image <photo.png>   (macOS)
-//       The blank-photo rule of the gui check, on a picture file.
-//   vst3_check compare <photo.png> <reference.png> <max share>   (macOS)
-//       Two photos must have the same size, and at most <max share> of their pixels may differ by more than 1/8 of
+//   vst3_check gui <bundle> <state file> <picture.png> [<wet> <second picture.png>]   (macOS)
+//       Loads the state, opens the editor in a window the way a host does, and saves what the editor drew (its OpenGL
+//       buffer), which must not be blank, plus a photo of the window for the record. With <wet>, the host then sets
+//       the Wet parameter to that normalized value with the window open, and the second picture must show the change.
+//   vst3_check image <picture.png>   (macOS)
+//       The blank-picture rule of the gui check, on a picture file.
+//   vst3_check compare <picture.png> <reference.png> <max share>   (macOS)
+//       Two pictures must have the same size, and at most <max share> of their pixels may differ by more than 1/8 of
 //       full scale in a color channel.
 //
 // Exit code: 0 when the check passes, 1 when it fails, 2 for a usage error. The last line printed is always
@@ -1846,15 +1846,15 @@ static bool checkInstance(Module& module, const std::string& frozenPath, const s
 
 #if defined(__APPLE__)
 // --------------------------------------------------------------------------------------------------------------------
-// Check: the editor window (macOS). What the host says to the plugin and what the photos must show are here; the
-// window, the event loop and the photos themselves are in gui_mac.mm.
+// Check: the editor window (macOS). What the host says to the plugin and what the pictures must show are here; the
+// window, the event loop and the pictures themselves are in gui_mac.mm.
 
-// How long the event loop runs before a photo. DPF's editor idles every 16 ms and gets the state and the parameter
-// values from the controller within a few of those, so this is generous.
+// How long the event loop runs before the pictures. DPF's editor idles every 16 ms and gets the state and the
+// parameter values from the controller within a few of those, so this is generous.
 static const double kFirstDrawSeconds = 3.0;
 static const double kUpdateSeconds = 2.0;
 
-// A window that didn't draw is one flat color: black, or the empty window's background. Wolf Shaper's editor has
+// An editor that didn't draw leaves one flat color: black, or an empty window's background. Wolf Shaper's editor has
 // thousands (an antialiased curve, gradients, text).
 static const double kBlankDominantShare = 0.98;
 static const size_t kBlankFewestColors = 32;
@@ -1913,7 +1913,7 @@ static std::string describeStats(const Image& image, const ImageStats& stats)
     return text;
 }
 
-// The blank-photo rule.
+// The blank-picture rule.
 static bool looksDrawn(const ImageStats& stats, std::string& why)
 {
     if (stats.pixels == 0)
@@ -2063,14 +2063,35 @@ static bool findParameter(IEditController* controller, const std::string& title,
     return false;
 }
 
-// Photographs the editor, saves the photo, and applies the blank-photo rule.
-static bool photograph(const std::string& path, Image& image, std::string& error)
+// The editor's picture: what it drew into its OpenGL buffer, saved at path. That is what the blank rule and the
+// comparisons look at (ci/README.md). The window as the screen shows it is photographed too and saved next to it
+// ("-window"), for the record: on a runner without a GPU it stays white whatever the editor draws, for the official
+// release as for ours.
+static bool takePictures(const std::string& path, Image& image, std::string& windowNote, std::string& error)
 {
-    if (!guiCapture(path, image, error))
+    std::string buffer;
+    if (!guiReadEditor(image, buffer, error) || !guiWritePng(path, image, error))
         return false;
     const ImageStats stats = imageStats(image);
-    std::printf("PHOTO %s: %s\n", baseName(path).c_str(), describeStats(image, stats).c_str());
+    std::printf("PICTURE %s, from the editor's OpenGL %s buffer: %s\n", baseName(path).c_str(), buffer.c_str(),
+                describeStats(image, stats).c_str());
+
+    const std::string windowPath = withSuffix(path, "-window");
+    Image window;
     std::string why;
+    if (!guiCapture(windowPath, window, why))
+    {
+        windowNote = "none: " + why;
+    }
+    else
+    {
+        const ImageStats windowStats = imageStats(window);
+        windowNote = looksDrawn(windowStats, why) ? std::string("not blank") : "blank, " + why;
+        std::printf("PHOTO %s, the window as the screen shows it: %s; %s\n", baseName(windowPath).c_str(),
+                    describeStats(window, windowStats).c_str(), windowNote.c_str());
+    }
+
+    why.clear();
     if (!looksDrawn(stats, why))
     {
         error = baseName(path) + " looks blank: " + why;
@@ -2079,24 +2100,8 @@ static bool photograph(const std::string& path, Image& image, std::string& error
     return true;
 }
 
-// The other pictures of what the editor drew (its OpenGL buffers, AppKit's own rendering of the window), saved next to
-// the photo with their numbers, for when the photo shows nothing.
-static void savePictures(const std::string& photoPath)
-{
-    for (const EditorPicture& picture : guiEditorPictures())
-    {
-        const std::string path = withSuffix(photoPath, "-" + picture.name);
-        std::string error = picture.error;
-        if (error.empty() && guiWritePng(path, picture.image, error))
-            std::printf("PICTURE %s: %s\n", baseName(path).c_str(),
-                        describeStats(picture.image, imageStats(picture.image)).c_str());
-        else
-            std::printf("PICTURE %s: none, %s\n", baseName(path).c_str(), error.c_str());
-    }
-}
-
 static bool checkGui(Module& module, const std::string& bundle, const std::string& statePath,
-                     const std::string& photoPath, const char* wetText, const std::string& wetPhotoPath,
+                     const std::string& picturePath, const char* wetText, const std::string& wetPicturePath,
                      std::string& detail)
 {
     std::string state;
@@ -2171,14 +2176,13 @@ static bool checkGui(Module& module, const std::string& bundle, const std::strin
             ok = attached = session.step("attached(NSView)", view->attached(parent, kPlatformTypeNSView));
     }
 
-    // The first photo, once the editor has had time to draw.
+    // The first pictures, once the editor has had time to draw.
     Image first;
+    std::string windowNote;
     if (ok)
     {
         guiRun(kFirstDrawSeconds);
-        const bool drawn = photograph(photoPath, first, error);
-        savePictures(photoPath);
-        if (!drawn)
+        if (!takePictures(picturePath, first, windowNote, error))
             ok = session.fail(error);
     }
 
@@ -2191,10 +2195,11 @@ static bool checkGui(Module& module, const std::string& bundle, const std::strin
                       static_cast<unsigned>(wetId), wet);
         ok = session.step(what, session.controller->setParamNormalized(wetId, wet));
         Image second;
+        std::string secondWindowNote;
         if (ok)
         {
             guiRun(kUpdateSeconds);
-            if (!photograph(wetPhotoPath, second, error))
+            if (!takePictures(wetPicturePath, second, secondWindowNote, error))
                 ok = session.fail(error);
         }
         if (ok)
@@ -2211,7 +2216,7 @@ static bool checkGui(Module& module, const std::string& bundle, const std::strin
     if (windowOpen)
         std::printf("%s", guiDescribe().c_str());
     if (!ok && windowOpen)
-        guiCaptureScreen(withSuffix(photoPath, "-screen"));
+        guiCaptureScreen(withSuffix(picturePath, "-screen"));
 
     // Closed as a host closes it: the view, then the window, then the plugin.
     if (attached)
@@ -2235,10 +2240,11 @@ static bool checkGui(Module& module, const std::string& bundle, const std::strin
         detail = session.error;
         return false;
     }
-    detail = std::to_string(width) + " x " + std::to_string(height) + " points, " + baseName(photoPath) + " " +
+    detail = std::to_string(width) + " x " + std::to_string(height) + " points, " + baseName(picturePath) + " " +
              describeStats(first, imageStats(first));
     if (wet >= 0)
         detail += "; after Wet " + change;
+    detail += "; window photo " + windowNote;
     return true;
 }
 
@@ -2294,9 +2300,9 @@ static int usage()
                 "  vst3_check params <bundle> <parameters.json> [<write to>]\n"
                 "  vst3_check states <bundle> <state file>...\n"
                 "  vst3_check instance <bundle> <plugin-info.json> [<write to>]\n"
-                "  vst3_check gui <bundle> <state file> <photo.png> [<wet> <second photo.png>]   (macOS)\n"
-                "  vst3_check image <photo.png>   (macOS)\n"
-                "  vst3_check compare <photo.png> <reference.png> <max share>   (macOS)\n");
+                "  vst3_check gui <bundle> <state file> <picture.png> [<wet> <second picture.png>]   (macOS)\n"
+                "  vst3_check image <picture.png>   (macOS)\n"
+                "  vst3_check compare <picture.png> <reference.png> <max share>   (macOS)\n");
     return 2;
 }
 

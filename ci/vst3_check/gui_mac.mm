@@ -6,8 +6,9 @@
  * Copyright (C) 2026 Sonic Weaponry
  */
 
-// The window a host gives a plugin's editor, the event loop that lets the editor draw, and the photos. The photos come
-// from Apple's screencapture tool: GitHub's macOS runners allow the tools a job runs to record the screen, while
+// The window a host gives a plugin's editor, the event loop that lets the editor draw, and the pictures: what the editor
+// drew into its OpenGL buffer, and a photo of the window as the screen shows it. The photo comes from Apple's
+// screencapture tool: GitHub's macOS runners allow the tools a job runs to record the screen, while
 // CGWindowListCreateImage returns no picture on macOS 26. Built with ARC.
 
 #define GL_SILENCE_DEPRECATION 1
@@ -207,7 +208,7 @@ static bool toRgba(CGImageRef picture, Image& image, std::string& error)
     return true;
 }
 
-bool guiCapture(const std::string& path, Image& image, std::string& error)
+bool guiCapture(const std::string& path, Image& area, std::string& error)
 {
     if (gWindow == nil)
     {
@@ -215,14 +216,13 @@ bool guiCapture(const std::string& path, Image& image, std::string& error)
         return false;
     }
     // -l: only this window, -o: without its shadow, -x: without the camera sound.
-    const std::string windowPath = withSuffix(path, "-window");
     NSArray<NSString*>* arguments = @[
         [NSString stringWithFormat:@"-l%ld", static_cast<long>([gWindow windowNumber])], @"-o", @"-x", @"-tpng",
-        toNSString(windowPath)
+        toNSString(path)
     ];
     if (!runTool(@"/usr/sbin/screencapture", arguments, error))
         return false;
-    CGImageRef window = loadImage(windowPath, error);
+    CGImageRef window = loadImage(path, error);
     if (window == nullptr)
         return false;
 
@@ -239,17 +239,17 @@ bool guiCapture(const std::string& path, Image& image, std::string& error)
         error = "the window photo has an unexpected size";
         return false;
     }
-    const CGRect area = CGRectMake(std::round((NSMinX(content) - NSMinX(frame)) * scaleX),
-                                   std::round((NSMaxY(frame) - NSMaxY(content)) * scaleY),
-                                   std::round(NSWidth(content) * scaleX), std::round(NSHeight(content) * scaleY));
-    CGImageRef cropped = CGImageCreateWithImageInRect(window, area);
+    const CGRect contentArea = CGRectMake(std::round((NSMinX(content) - NSMinX(frame)) * scaleX),
+                                          std::round((NSMaxY(frame) - NSMaxY(content)) * scaleY),
+                                          std::round(NSWidth(content) * scaleX), std::round(NSHeight(content) * scaleY));
+    CGImageRef cropped = CGImageCreateWithImageInRect(window, contentArea);
     CGImageRelease(window);
     if (cropped == nullptr)
     {
         error = "could not cut the content area out of the window photo";
         return false;
     }
-    const bool ok = savePng(cropped, path, error) && toRgba(cropped, image, error);
+    const bool ok = toRgba(cropped, area, error);
     CGImageRelease(cropped);
     return ok;
 }
@@ -322,39 +322,29 @@ static bool readOpenGL(NSOpenGLView* view, GLenum buffer, Image& image, std::str
     return true;
 }
 
-std::vector<EditorPicture> guiEditorPictures()
+// A single-buffered context (the software renderer's fallback on a runner) draws straight into the front buffer. With
+// double buffering the front buffer holds the frame last shown, and the back one is the fallback.
+bool guiReadEditor(Image& image, std::string& buffer, std::string& error)
 {
-    std::vector<EditorPicture> pictures;
-    if (gWindow == nil)
-        return pictures;
-    if (NSOpenGLView* view = findOpenGLView([gWindow contentView]))
+    NSOpenGLView* view = gWindow != nil ? findOpenGLView([gWindow contentView]) : nil;
+    if (view == nil)
     {
-        EditorPicture front{"gl-front", Image(), ""};
-        readOpenGL(view, GL_FRONT, front.image, front.error);
-        pictures.push_back(front);
-        EditorPicture back{"gl-back", Image(), ""};
-        readOpenGL(view, GL_BACK, back.image, back.error);
-        pictures.push_back(back);
+        error = "the editor has no OpenGL view";
+        return false;
     }
-
-    NSView* content = [gWindow contentView];
-    EditorPicture cache{"appkit", Image(), ""};
-    NSBitmapImageRep* rep = [content bitmapImageRepForCachingDisplayInRect:[content bounds]];
-    if (rep == nil)
+    std::string frontError;
+    if (readOpenGL(view, GL_FRONT, image, frontError))
     {
-        cache.error = "no bitmap for cacheDisplayInRect";
+        buffer = "front";
+        return true;
     }
-    else
+    if (readOpenGL(view, GL_BACK, image, error))
     {
-        [content cacheDisplayInRect:[content bounds] toBitmapImageRep:rep];
-        CGImageRef picture = [rep CGImage];
-        if (picture == nullptr)
-            cache.error = "cacheDisplayInRect gave no picture";
-        else
-            toRgba(picture, cache.image, cache.error);
+        buffer = "back";
+        return true;
     }
-    pictures.push_back(cache);
-    return pictures;
+    error = "front buffer: " + frontError + "; back buffer: " + error;
+    return false;
 }
 
 bool guiWritePng(const std::string& path, const Image& image, std::string& error)

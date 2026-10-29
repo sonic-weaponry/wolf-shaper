@@ -45,23 +45,16 @@ bool guiResizeWindow(int width, int height);
 // Runs the event loop, which lets the plugin draw and run its timers.
 void guiRun(double seconds);
 
-// Photographs the window with Apple's screencapture tool, saves the content area (where the plugin draws) as a PNG at
-// path and the whole window next to it ("-window"), and returns the content area.
-bool guiCapture(const std::string& path, Image& image, std::string& error);
+// What the editor drew: its OpenGL buffer, read with its own context (glReadPixels). The front buffer, or the back one
+// when the front can't be read; buffer says which.
+bool guiReadEditor(Image& image, std::string& buffer, std::string& error);
+
+// Photographs the window as the screen shows it with Apple's screencapture tool, saves the photo as a PNG at path, and
+// returns its content area, where the plugin draws.
+bool guiCapture(const std::string& path, Image& area, std::string& error);
 
 // The whole screen, to see what went wrong.
 void guiCaptureScreen(const std::string& path);
-
-// Other pictures of what the editor drew, for when the photo shows nothing: what its OpenGL context holds in the front
-// and back buffers (glReadPixels), and what AppKit draws of the window's content view itself (cacheDisplayInRect).
-// Each has a short name, and either a picture or the reason there is none.
-struct EditorPicture
-{
-    std::string name;
-    Image image;
-    std::string error;
-};
-std::vector<EditorPicture> guiEditorPictures();
 
 bool guiWritePng(const std::string& path, const Image& image, std::string& error);
 
