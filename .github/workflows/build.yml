@@ -1,6 +1,6 @@
 # Builds the Wolf Shaper VST3 with DPF's Makefiles (macOS universal, Linux x64, Windows x64) and runs the checks in
-# ci/ on our build and on the official v1.0.2 release side by side: class IDs, parameters, states, and opening the
-# plugin the way a host does. See ci/README.md.
+# ci/ on our build and on the official v1.0.2 release side by side: class IDs, parameters, states, opening the plugin
+# the way a host does, and on macOS its editor window. See ci/README.md.
 name: build
 
 on:
@@ -35,6 +35,9 @@ jobs:
         shell: bash
     env:
       GH_TOKEN: ${{ github.token }}
+      # How much of an editor photo may differ from the official v1.0.2's photo of the same state: the share of pixels
+      # with a color channel more than 1/8 of full scale apart (ci/README.md). Provisional until measured.
+      GUI_MAX_DIFFERENT_SHARE: '0.01'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,6 +50,7 @@ jobs:
           xcodebuild -version
           clang --version | head -n 1
           git -C dpf log -1 --format='dpf %H %s'
+          system_profiler SPDisplaysDataType | sed -n '1,40p'
 
       # The flags DISTRHO/dpf-makefile-action used for the official v1.0.2 macOS release (target macos-universal).
       - name: Build the VST3 (universal)
@@ -110,6 +114,34 @@ jobs:
       - name: Checks, official v1.0.2, x86_64 (Rosetta)
         if: ${{ !cancelled() && steps.official.outcome == 'success' && steps.tool.outcome == 'success' }}
         run: bash ci/run_checks.sh ci/vst3_check/build/vst3_check official/wolf-shaper.vst3 official macos-x86_64-official arch -x86_64
+
+      # The editor window, opened as a host does and photographed (public test states only). The official v1.0.2 goes
+      # first so that ours can be compared with it. This runner is a virtual machine without a GPU: OpenGL there is
+      # Apple's software renderer, so these photos can't speak for a real Mac's graphics driver.
+      - name: GUI, official v1.0.2, arm64
+        if: ${{ !cancelled() && steps.official.outcome == 'success' && steps.tool.outcome == 'success' }}
+        timeout-minutes: 5
+        run: bash ci/run_gui_checks.sh ci/vst3_check/build/vst3_check official/wolf-shaper.vst3 macos-arm64-official -
+
+      - name: GUI, our build, arm64, compared with the official
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.tool.outcome == 'success' }}
+        timeout-minutes: 5
+        run: bash ci/run_gui_checks.sh ci/vst3_check/build/vst3_check bin/wolf-shaper.vst3 macos-arm64-ours macos-arm64-official
+
+      - name: GUI, official v1.0.2, x86_64 (Rosetta)
+        if: ${{ !cancelled() && steps.official.outcome == 'success' && steps.tool.outcome == 'success' }}
+        timeout-minutes: 5
+        run: bash ci/run_gui_checks.sh ci/vst3_check/build/vst3_check official/wolf-shaper.vst3 macos-x86_64-official - arch -x86_64
+
+      - name: GUI, our build, x86_64 (Rosetta), compared with the official
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.tool.outcome == 'success' }}
+        timeout-minutes: 5
+        run: bash ci/run_gui_checks.sh ci/vst3_check/build/vst3_check bin/wolf-shaper.vst3 macos-x86_64-ours macos-x86_64-official arch -x86_64
+
+      - name: GUI self-test (each GUI check must fail on a wrong picture)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.tool.outcome == 'success' }}
+        timeout-minutes: 5
+        run: bash ci/self_test_gui.sh ci/vst3_check/build/vst3_check macos-arm64-ours
 
       - name: Pack our build with its licenses and source link
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
