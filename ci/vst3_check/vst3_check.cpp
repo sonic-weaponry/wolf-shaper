@@ -29,6 +29,14 @@
 //   vst3_check compare <picture.png> <reference.png> <max share>   (macOS)
 //       Two pictures must have the same size, and at most <max share> of their pixels may differ by more than 1/8 of
 //       full scale in a color channel.
+//   vst3_check render <bundle> <state file> <input.wav> <block size> <output.wav>
+//       Loads the state as a host restores a saved device, then plays 10 s of silence and the input (32-bit float,
+//       mono or stereo; its sample rate is the render's) through the plugin in blocks of the given size, and writes
+//       what comes out as a 32-bit float stereo WAV, for the sound null test (ci/null_test.py).
+//   vst3_check locale <bundle> <locale> <state file>...
+//       Loads each state in a fresh instance in the "C" locale and again with the process switched to <locale> (one
+//       with a decimal comma, such as de_DE.UTF-8), and compares the parameter values the controller shows and the
+//       state the component saves back.
 //
 // Exit code: 0 when the check passes, 1 when it fails, 2 for a usage error. The last line printed is always
 // "RESULT <check> PASS|FAIL <detail>".
@@ -48,15 +56,21 @@
 #include "pluginterfaces/vst/ivsteditcontroller.h"
 #include "pluginterfaces/vst/ivsthostapplication.h"
 #include "pluginterfaces/vst/ivstmessage.h"
+#include "pluginterfaces/vst/ivstparameterchanges.h"
+#include "pluginterfaces/vst/ivstprocesscontext.h"
+#include "pluginterfaces/vst/vstspeaker.h"
 
 #include "gui.hpp"
 
 #include <algorithm>
+#include <clocale>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <iterator>
 #include <map>
@@ -1844,6 +1858,544 @@ static bool checkInstance(Module& module, const std::string& frozenPath, const s
     return matchesFrozen(frozenPath, json, detail);
 }
 
+// --------------------------------------------------------------------------------------------------------------------
+// Audio files: 32-bit float WAV, mono or stereo, as the null test uses them. Every runner is little-endian.
+
+struct Audio
+{
+    double rate = 0;
+    int channels = 0;
+    std::vector<float> samples; // interleaved
+
+    size_t frames() const { return channels > 0 ? samples.size() / static_cast<size_t>(channels) : 0; }
+};
+
+static uint32_t readLE(const std::string& data, size_t at, int bytes)
+{
+    uint32_t value = 0;
+    for (int i = bytes - 1; i >= 0; --i)
+        value = (value << 8) | static_cast<unsigned char>(data[at + static_cast<size_t>(i)]);
+    return value;
+}
+
+static bool readWav(const std::string& path, Audio& audio, std::string& error)
+{
+    std::string data;
+    if (!readFile(path, data))
+    {
+        error = "could not read " + path;
+        return false;
+    }
+    if (data.size() < 12 || data.compare(0, 4, "RIFF") != 0 || data.compare(8, 4, "WAVE") != 0)
+    {
+        error = path + " is not a WAV file";
+        return false;
+    }
+    bool haveFormat = false;
+    uint32_t format = 0, channels = 0, rate = 0, bits = 0;
+    for (size_t at = 12; at + 8 <= data.size();)
+    {
+        const std::string id = data.substr(at, 4);
+        const size_t size = readLE(data, at + 4, 4);
+        const size_t body = at + 8;
+        if (body + size > data.size())
+        {
+            error = path + ": the " + id + " chunk runs past the end of the file";
+            return false;
+        }
+        if (id == "fmt " && size >= 16)
+        {
+            format = readLE(data, body, 2);
+            channels = readLE(data, body + 2, 2);
+            rate = readLE(data, body + 4, 4);
+            bits = readLE(data, body + 14, 2);
+            // WAVE_FORMAT_EXTENSIBLE: the sub-format GUID starts with the real format tag.
+            if (format == 0xFFFE && size >= 40)
+                format = readLE(data, body + 24, 2);
+            haveFormat = true;
+        }
+        else if (id == "data")
+        {
+            if (!haveFormat || format != 3 || bits != 32 || channels < 1 || channels > 2 || rate == 0)
+            {
+                error = path + " is not a 32-bit float mono or stereo WAV file";
+                return false;
+            }
+            audio.rate = rate;
+            audio.channels = static_cast<int>(channels);
+            audio.samples.resize(size / 4);
+            std::memcpy(audio.samples.data(), data.data() + body, audio.samples.size() * 4);
+            return true;
+        }
+        at = body + size + (size & 1);
+    }
+    error = path + " has no data chunk";
+    return false;
+}
+
+static bool writeWav(const std::string& path, const Audio& audio)
+{
+    std::string out;
+    const auto put = [&out](uint32_t value, int bytes) {
+        for (int i = 0; i < bytes; ++i)
+            out += static_cast<char>((value >> (8 * i)) & 0xFF);
+    };
+    const uint32_t channels = static_cast<uint32_t>(audio.channels);
+    const uint32_t rate = static_cast<uint32_t>(std::lround(audio.rate));
+    const uint32_t dataBytes = static_cast<uint32_t>(audio.samples.size() * 4);
+    out += "RIFF";
+    put(4 + (8 + 18) + (8 + 4) + (8 + dataBytes), 4);
+    out += "WAVE";
+    out += "fmt ";
+    put(18, 4);
+    put(3, 2); // WAVE_FORMAT_IEEE_FLOAT
+    put(channels, 2);
+    put(rate, 4);
+    put(rate * channels * 4, 4);
+    put(channels * 4, 2);
+    put(32, 2);
+    put(0, 2);
+    out += "fact";
+    put(4, 4);
+    put(static_cast<uint32_t>(audio.frames()), 4);
+    out += "data";
+    put(dataBytes, 4);
+    out.append(reinterpret_cast<const char*>(audio.samples.data()), dataBytes);
+    return writeFile(path, out);
+}
+
+static std::string decibels(double level)
+{
+    if (level <= 0)
+        return "-inf";
+    char text[32];
+    std::snprintf(text, sizeof(text), "%.2f", 20.0 * std::log10(level));
+    return text;
+}
+
+// --------------------------------------------------------------------------------------------------------------------
+// Parameter changes a host hands to process(): none going in, and a list that collects what DPF reports back (it
+// asserts when there's no list to report into).
+
+class HostParamValueQueue final : public IParamValueQueue
+{
+public:
+    ParamID id = 0;
+    std::vector<std::pair<int32, ParamValue>> points;
+
+    ParamID PLUGIN_API getParameterId() override { return id; }
+    int32 PLUGIN_API getPointCount() override { return static_cast<int32>(points.size()); }
+
+    tresult PLUGIN_API getPoint(int32 index, int32& sampleOffset, ParamValue& value) override
+    {
+        if (index < 0 || index >= getPointCount())
+            return kInvalidArgument;
+        sampleOffset = points[static_cast<size_t>(index)].first;
+        value = points[static_cast<size_t>(index)].second;
+        return kResultOk;
+    }
+
+    tresult PLUGIN_API addPoint(int32 sampleOffset, ParamValue value, int32& index) override
+    {
+        index = getPointCount();
+        points.push_back(std::make_pair(sampleOffset, value));
+        return kResultOk;
+    }
+
+    tresult PLUGIN_API queryInterface(const TUID iid, void** obj) override
+    {
+        if (FUnknownPrivate::iidEqual(iid, FUnknown_iid) || FUnknownPrivate::iidEqual(iid, IParamValueQueue_iid))
+        {
+            *obj = static_cast<IParamValueQueue*>(this);
+            return kResultOk;
+        }
+        *obj = nullptr;
+        return kNoInterface;
+    }
+
+    uint32 PLUGIN_API addRef() override { return 1000; }
+    uint32 PLUGIN_API release() override { return 1000; }
+};
+
+class HostParameterChanges final : public IParameterChanges
+{
+public:
+    std::deque<HostParamValueQueue> queues; // a deque, so a queue handed out stays put when another is added
+
+    int32 PLUGIN_API getParameterCount() override { return static_cast<int32>(queues.size()); }
+
+    IParamValueQueue* PLUGIN_API getParameterData(int32 index) override
+    {
+        if (index < 0 || index >= getParameterCount())
+            return nullptr;
+        return &queues[static_cast<size_t>(index)];
+    }
+
+    IParamValueQueue* PLUGIN_API addParameterData(const ParamID& id, int32& index) override
+    {
+        for (size_t i = 0; i < queues.size(); ++i)
+        {
+            if (queues[i].id == id)
+            {
+                index = static_cast<int32>(i);
+                return &queues[i];
+            }
+        }
+        queues.emplace_back();
+        queues.back().id = id;
+        index = getParameterCount() - 1;
+        return &queues.back();
+    }
+
+    tresult PLUGIN_API queryInterface(const TUID iid, void** obj) override
+    {
+        if (FUnknownPrivate::iidEqual(iid, FUnknown_iid) || FUnknownPrivate::iidEqual(iid, IParameterChanges_iid))
+        {
+            *obj = static_cast<IParameterChanges*>(this);
+            return kResultOk;
+        }
+        *obj = nullptr;
+        return kNoInterface;
+    }
+
+    uint32 PLUGIN_API addRef() override { return 1000; }
+    uint32 PLUGIN_API release() override { return 1000; }
+};
+
+// --------------------------------------------------------------------------------------------------------------------
+// Check: render. The plugin plays a test signal the way a host plays a track, for the sound null test (ci/README.md).
+
+// Silence before the test signal. Wolf Shaper's knobs glide to loaded values (a 20 Hz one-pole) and its DC remover
+// settles slowly, so this makes a render independent of how a host loaded the state. The Windows reference renders
+// settle for the same 10 s.
+static const double kSettleSeconds = 10.0;
+
+static bool checkRender(Module& module, const std::string& statePath, const std::string& inputPath,
+                        const std::string& blockText, const std::string& outputPath, std::string& detail)
+{
+    std::string state;
+    if (!readFile(statePath, state))
+    {
+        detail = "could not read " + statePath;
+        return false;
+    }
+    Audio input;
+    if (!readWav(inputPath, input, detail))
+        return false;
+    const int block = std::atoi(blockText.c_str());
+    if (block < 2 || block > 8192)
+    {
+        detail = "the block size must be 2 to 8192";
+        return false;
+    }
+    std::printf("RENDER state %s (%zu bytes); input %s: %zu frames, %d channel(s), %.0f Hz; blocks of %d; %.0f s of "
+                "silence first\n",
+                baseName(statePath).c_str(), state.size(), baseName(inputPath).c_str(), input.frames(),
+                input.channels, input.rate, block, kSettleSeconds);
+
+    setHostContext(module.factory);
+    const ClassIds ids = findClasses(module.factory);
+    Session session;
+    IAudioProcessor* processor = nullptr;
+    bool active = false, processing = false;
+
+    bool ok = session.open(module.factory, ids);
+    if (ok &&
+        (session.component->queryInterface(IAudioProcessor_iid, reinterpret_cast<void**>(&processor)) != kResultOk ||
+         processor == nullptr))
+    {
+        processor = nullptr;
+        ok = session.fail("the component has no IAudioProcessor");
+    }
+    if (ok)
+        ok = session.step("canProcessSampleSize(32-bit float)", processor->canProcessSampleSize(kSample32));
+    SpeakerArrangement inputArrangement = SpeakerArr::kStereo;
+    SpeakerArrangement outputArrangement = SpeakerArr::kStereo;
+    if (ok)
+        ok = session.step("setBusArrangements(stereo in, stereo out)",
+                          processor->setBusArrangements(&inputArrangement, 1, &outputArrangement, 1));
+    if (ok)
+        ok = session.step("activate the audio input bus", session.component->activateBus(kAudio, kInput, 0, true));
+    if (ok)
+        ok = session.step("activate the audio output bus", session.component->activateBus(kAudio, kOutput, 0, true));
+    ProcessSetup setup{kRealtime, kSample32, block, input.rate};
+    if (ok)
+        ok = session.step("setupProcessing", processor->setupProcessing(setup));
+    // The state as a host restores a saved device: the component gets it, the controller the same bytes. The order
+    // matters for the sound. Wolf Shaper v1.0.2 sets its knobs' glide speed from the sample rate it knows when a state
+    // sets the Oversample knob, and the glide stops a few hundred float steps short of each value (where exactly
+    // depends on that speed). A state loaded before setupProcessing glides at DPF's 44.1 kHz default instead, which
+    // moves the output by about -110 dBFS, more at sharp corners of a curve. This order (sample rate, then state) is
+    // the one the Windows reference renders use (ci/README.md, "The sound").
+    if (ok)
+        ok = session.step("component setState", loadComponentState(session.component, state));
+    if (ok)
+        ok = session.step("controller setComponentState", loadControllerState(session.controller, state));
+    if (ok)
+        ok = active = session.step("setActive(true)", session.component->setActive(true));
+    if (ok)
+        ok = processing = session.step("setProcessing(true)", processor->setProcessing(true));
+
+    Audio output;
+    output.rate = input.rate;
+    output.channels = 2;
+    if (ok)
+    {
+        const size_t settleFrames = static_cast<size_t>(std::llround(kSettleSeconds * input.rate));
+        const size_t totalFrames = settleFrames + input.frames();
+        std::vector<float> inL(static_cast<size_t>(block)), inR(inL.size()), outL(inL.size()), outR(inL.size());
+        float* inChannels[2] = {inL.data(), inR.data()};
+        float* outChannels[2] = {outL.data(), outR.data()};
+        AudioBusBuffers inBus{}, outBus{};
+        inBus.numChannels = 2;
+        inBus.channelBuffers32 = inChannels;
+        outBus.numChannels = 2;
+        outBus.channelBuffers32 = outChannels;
+        HostParameterChanges inChanges, outChanges;
+        ProcessContext context{};
+        context.sampleRate = input.rate;
+        context.tempo = 120;
+        context.timeSigNumerator = 4;
+        context.timeSigDenominator = 4;
+        output.samples.reserve(input.frames() * 2);
+
+        for (size_t position = 0; ok && position < totalFrames;)
+        {
+            // Stopped while it settles, playing from the start of the test signal, which starts a block.
+            const bool settling = position < settleFrames;
+            const size_t end = settling ? settleFrames : totalFrames;
+            const int32 count = static_cast<int32>(std::min<size_t>(static_cast<size_t>(block), end - position));
+            for (int32 i = 0; i < count; ++i)
+            {
+                float left = 0, right = 0;
+                if (!settling)
+                {
+                    const size_t frame = position - settleFrames + static_cast<size_t>(i);
+                    left = input.samples[frame * static_cast<size_t>(input.channels)];
+                    right = input.channels == 2 ? input.samples[frame * 2 + 1] : left;
+                }
+                inL[static_cast<size_t>(i)] = left;
+                inR[static_cast<size_t>(i)] = right;
+            }
+            std::fill(outL.begin(), outL.end(), 0.0f);
+            std::fill(outR.begin(), outR.end(), 0.0f);
+
+            const int64 played = settling ? 0 : static_cast<int64>(position - settleFrames);
+            context.state = ProcessContext::kTempoValid | ProcessContext::kTimeSigValid | ProcessContext::kContTimeValid |
+                            ProcessContext::kProjectTimeMusicValid | (settling ? 0 : ProcessContext::kPlaying);
+            context.projectTimeSamples = played;
+            context.continousTimeSamples = static_cast<int64>(position);
+            context.projectTimeMusic = static_cast<double>(played) / input.rate * (context.tempo / 60.0);
+
+            ProcessData data;
+            data.processMode = kRealtime;
+            data.symbolicSampleSize = kSample32;
+            data.numSamples = count;
+            data.numInputs = 1;
+            data.numOutputs = 1;
+            data.inputs = &inBus;
+            data.outputs = &outBus;
+            data.inputParameterChanges = &inChanges;
+            data.outputParameterChanges = &outChanges;
+            data.processContext = &context;
+            outChanges.queues.clear();
+            const tresult result = processor->process(data);
+            if (result != kResultOk)
+            {
+                ok = session.fail(std::string("process returned ") + resultName(result) + " at frame " +
+                                  std::to_string(position));
+                break;
+            }
+            if (!settling)
+            {
+                for (int32 i = 0; i < count; ++i)
+                {
+                    output.samples.push_back(outL[static_cast<size_t>(i)]);
+                    output.samples.push_back(outR[static_cast<size_t>(i)]);
+                }
+            }
+            position += static_cast<size_t>(count);
+        }
+    }
+
+    if (processing)
+        session.step("setProcessing(false)", processor->setProcessing(false));
+    if (active)
+        session.step("setActive(false)", session.component->setActive(false));
+    if (processor != nullptr)
+        processor->release();
+    session.close();
+    if (!session.ok)
+    {
+        session.printSteps("  ");
+        detail = session.error;
+        return false;
+    }
+
+    size_t nonFinite = 0;
+    bool leftIsRight = true;
+    double peak = 0, sumOfSquares = 0;
+    for (size_t i = 0; i < output.samples.size(); ++i)
+    {
+        const float value = output.samples[i];
+        if (!std::isfinite(value))
+        {
+            ++nonFinite;
+            continue;
+        }
+        peak = std::max(peak, static_cast<double>(std::fabs(value)));
+        sumOfSquares += static_cast<double>(value) * value;
+        if (i % 2 == 1 && value != output.samples[i - 1])
+            leftIsRight = false;
+    }
+    const double rms = output.samples.empty() ? 0 : std::sqrt(sumOfSquares / static_cast<double>(output.samples.size()));
+    std::printf("OUTPUT %zu frames, peak %s dBFS, RMS %s dBFS, left and right %s\n", output.frames(),
+                decibels(peak).c_str(), decibels(rms).c_str(), leftIsRight ? "identical" : "differ");
+    if (nonFinite > 0)
+    {
+        detail = std::to_string(nonFinite) + " samples are NaN or infinite";
+        return false;
+    }
+    if (output.frames() != input.frames())
+    {
+        detail = "the output has " + std::to_string(output.frames()) + " frames, the input " +
+                 std::to_string(input.frames());
+        return false;
+    }
+    if (!writeWav(outputPath, output))
+    {
+        detail = "could not write " + outputPath;
+        return false;
+    }
+    detail = baseName(outputPath) + ": " + std::to_string(output.frames()) + " frames, peak " + decibels(peak) + " dBFS";
+    return true;
+}
+
+// --------------------------------------------------------------------------------------------------------------------
+// Check: locale. DPF reads saved parameter values with atof and writes them with printf-style formatting, and both
+// follow the C locale of the process, which a host shares with every plugin it loads (on macOS and Linux; on Windows
+// each C runtime has its own). This loads each state with the process in "C" and in a decimal-comma locale.
+
+struct LoadedState
+{
+    std::vector<double> values; // plain values, in the controller's parameter order
+    std::string saved;
+    std::string error;
+};
+
+static bool loadAndRead(Module& module, const ClassIds& ids, const std::vector<Parameter>& parameters,
+                        const std::string& state, LoadedState& loaded)
+{
+    Session session;
+    bool ok = session.open(module.factory, ids);
+    if (ok)
+        ok = session.step("component setState", loadComponentState(session.component, state));
+    if (ok)
+        ok = session.step("controller setComponentState", loadControllerState(session.controller, state));
+    if (ok)
+    {
+        for (const Parameter& p : parameters)
+            loaded.values.push_back(plainValue(session.controller, p.info.id));
+        ok = session.step("getState", saveComponentState(session.component, loaded.saved));
+    }
+    session.close();
+    if (!session.ok)
+        loaded.error = session.error;
+    return session.ok;
+}
+
+static bool checkLocale(Module& module, const std::string& localeName, const std::vector<std::string>& files,
+                        std::string& detail)
+{
+    std::vector<std::pair<std::string, std::string>> states;
+    for (const std::string& path : files)
+    {
+        std::string data;
+        if (!readFile(path, data))
+        {
+            detail = "could not read " + path;
+            return false;
+        }
+        states.push_back(std::make_pair(baseName(path), data));
+    }
+
+    std::setlocale(LC_ALL, "C");
+    if (std::setlocale(LC_ALL, localeName.c_str()) == nullptr)
+    {
+        detail = "the locale " + localeName + " isn't installed here";
+        return false;
+    }
+    const std::string decimalPoint = std::localeconv()->decimal_point;
+    std::setlocale(LC_ALL, "C");
+    std::printf("LOCALE %s writes numbers with the decimal point \"%s\"\n", localeName.c_str(), decimalPoint.c_str());
+    if (decimalPoint == ".")
+    {
+        detail = localeName + " uses a decimal point, so it can't show the problem";
+        return false;
+    }
+
+    setHostContext(module.factory);
+    const ClassIds ids = findClasses(module.factory);
+    std::vector<Parameter> parameters;
+    {
+        Session probe;
+        std::string error;
+        const bool ok = probe.open(module.factory, ids) && listParameters(probe.controller, parameters, error);
+        probe.close();
+        if (!ok)
+        {
+            detail = error.empty() ? probe.error : error;
+            return false;
+        }
+    }
+
+    size_t statesDiffering = 0;
+    for (const auto& named : states)
+    {
+        LoadedState inC, inLocale;
+        const bool loadedInC = loadAndRead(module, ids, parameters, named.second, inC);
+        std::setlocale(LC_ALL, localeName.c_str());
+        const bool loadedInLocale = loadAndRead(module, ids, parameters, named.second, inLocale);
+        std::setlocale(LC_ALL, "C"); // before anything is printed: printf follows the locale too
+        if (!loadedInC || !loadedInLocale)
+        {
+            detail = named.first + ": " + (loadedInC ? inLocale.error : inC.error);
+            return false;
+        }
+
+        size_t valuesDiffering = 0;
+        for (size_t i = 0; i < parameters.size(); ++i)
+        {
+            if (inC.values[i] == inLocale.values[i])
+                continue;
+            ++valuesDiffering;
+            std::printf("  %s: %s (ID %u) shows %.9g in the C locale, %.9g in %s\n", named.first.c_str(),
+                        parameters[i].title.c_str(), static_cast<unsigned>(parameters[i].info.id), inC.values[i],
+                        inLocale.values[i], localeName.c_str());
+        }
+        const bool sameSaved = inC.saved == inLocale.saved;
+        if (!sameSaved)
+        {
+            std::printf("  %s: the state saved in %s differs from the one saved in the C locale (\"frozen\" below)\n",
+                        named.first.c_str(), localeName.c_str());
+            printStateDifference(inC.saved, inLocale.saved);
+        }
+        if (valuesDiffering == 0 && sameSaved)
+            std::printf("LOCALE %s: all %zu values the same, saved back the same\n", named.first.c_str(),
+                        parameters.size());
+        else
+        {
+            ++statesDiffering;
+            std::printf("LOCALE %s: %zu of %zu values differ, saved state %s\n", named.first.c_str(),
+                        valuesDiffering, parameters.size(), sameSaved ? "the same" : "different");
+        }
+    }
+
+    detail = std::to_string(statesDiffering) + " of " + std::to_string(states.size()) +
+             " states load or save differently in " + localeName;
+    return statesDiffering == 0;
+}
+
 #if defined(__APPLE__)
 // --------------------------------------------------------------------------------------------------------------------
 // Check: the editor window (macOS). What the host says to the plugin and what the pictures must show are here; the
@@ -2302,7 +2854,9 @@ static int usage()
                 "  vst3_check instance <bundle> <plugin-info.json> [<write to>]\n"
                 "  vst3_check gui <bundle> <state file> <picture.png> [<wet> <second picture.png>]   (macOS)\n"
                 "  vst3_check image <picture.png>   (macOS)\n"
-                "  vst3_check compare <picture.png> <reference.png> <max share>   (macOS)\n");
+                "  vst3_check compare <picture.png> <reference.png> <max share>   (macOS)\n"
+                "  vst3_check render <bundle> <state file> <input.wav> <block size> <output.wav>\n"
+                "  vst3_check locale <bundle> <locale> <state file>...\n");
     return 2;
 }
 
@@ -2333,13 +2887,16 @@ int main(int argc, char* argv[])
     if (argc < 4)
         return usage();
     const std::string bundle = argv[2];
-    if (check != "ids" && check != "params" && check != "states" && check != "instance" && check != "gui")
+    if (check != "ids" && check != "params" && check != "states" && check != "instance" && check != "gui" &&
+        check != "render" && check != "locale")
         return usage();
     if (check == "ids" && argc != 5)
         return usage();
     if ((check == "params" || check == "instance") && argc > 5)
         return usage();
     if (check == "gui" && argc != 5 && argc != 7)
+        return usage();
+    if ((check == "render" && argc != 7) || (check == "locale" && argc < 5))
         return usage();
 #if !defined(__APPLE__)
     if (check == "gui")
@@ -2378,6 +2935,10 @@ int main(int argc, char* argv[])
             pass = checkStates(module, std::vector<std::string>(argv + 3, argv + argc), detail);
         else if (check == "instance")
             pass = checkInstance(module, argv[3], argc > 4 ? argv[4] : "", detail);
+        else if (check == "render")
+            pass = checkRender(module, argv[3], argv[4], argv[5], argv[6], detail);
+        else if (check == "locale")
+            pass = checkLocale(module, argv[3], std::vector<std::string>(argv + 4, argv + argc), detail);
 #if defined(__APPLE__)
         else
             pass = checkGui(module, bundle, argv[3], argv[4], argc == 7 ? argv[5] : nullptr, argc == 7 ? argv[6] : "",
