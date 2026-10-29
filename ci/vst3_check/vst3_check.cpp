@@ -20,6 +20,15 @@
 //   vst3_check instance <bundle> <plugin-info.json> [<write to>]
 //       Creates the component from its class ID and the controller from getControllerClassId, connects them as a host
 //       does, and compares what a host sees (names, versions, buses) with the frozen table.
+//   vst3_check gui <bundle> <state file> <photo.png> [<wet> <second photo.png>]   (macOS)
+//       Loads the state, opens the editor in a window the way a host does, photographs it and requires a photo that
+//       isn't blank. With <wet>, the host then sets the Wet parameter to that normalized value with the window open,
+//       and the second photo must show the change.
+//   vst3_check image <photo.png>   (macOS)
+//       The blank-photo rule of the gui check, on a picture file.
+//   vst3_check compare <photo.png> <reference.png> <max share>   (macOS)
+//       Two photos must have the same size, and at most <max share> of their pixels may differ by more than 1/8 of
+//       full scale in a color channel.
 //
 // Exit code: 0 when the check passes, 1 when it fails, 2 for a usage error. The last line printed is always
 // "RESULT <check> PASS|FAIL <detail>".
@@ -32,14 +41,19 @@
 #include "pluginterfaces/base/funknown.h"
 #include "pluginterfaces/base/ibstream.h"
 #include "pluginterfaces/base/ipluginbase.h"
+#include "pluginterfaces/gui/iplugview.h"
+#include "pluginterfaces/vst/ivstattributes.h"
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
 #include "pluginterfaces/vst/ivstcomponent.h"
 #include "pluginterfaces/vst/ivsteditcontroller.h"
 #include "pluginterfaces/vst/ivsthostapplication.h"
 #include "pluginterfaces/vst/ivstmessage.h"
 
+#include "gui.hpp"
+
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -48,6 +62,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #if defined(_WIN32)
@@ -310,6 +325,214 @@ static bool matchesFrozen(const std::string& frozenPath, const std::string& gene
 }
 
 // --------------------------------------------------------------------------------------------------------------------
+// Messages. Once an editor is open, DPF's editor and controller talk through IMessage objects they ask the host to
+// create (IHostApplication::createInstance), the way the VST3 SDK's own hosting code provides them. The plugin creates
+// and releases these, so unlike the other host objects they count their references.
+
+static int gMessagesCreated = 0;
+static int gMessagesDeleted = 0;
+
+class HostAttributeList final : public IAttributeList
+{
+public:
+    tresult PLUGIN_API setInt(AttrID id, int64 value) override
+    {
+        Value* v = slot(id, Value::kInt);
+        if (v == nullptr)
+            return kInvalidArgument;
+        v->i = value;
+        return kResultTrue;
+    }
+
+    tresult PLUGIN_API getInt(AttrID id, int64& value) override
+    {
+        const Value* v = find(id, Value::kInt);
+        if (v == nullptr)
+            return kResultFalse;
+        value = v->i;
+        return kResultTrue;
+    }
+
+    tresult PLUGIN_API setFloat(AttrID id, double value) override
+    {
+        Value* v = slot(id, Value::kFloat);
+        if (v == nullptr)
+            return kInvalidArgument;
+        v->f = value;
+        return kResultTrue;
+    }
+
+    tresult PLUGIN_API getFloat(AttrID id, double& value) override
+    {
+        const Value* v = find(id, Value::kFloat);
+        if (v == nullptr)
+            return kResultFalse;
+        value = v->f;
+        return kResultTrue;
+    }
+
+    tresult PLUGIN_API setString(AttrID id, const TChar* string) override
+    {
+        if (string == nullptr)
+            return kInvalidArgument;
+        Value* v = slot(id, Value::kString);
+        if (v == nullptr)
+            return kInvalidArgument;
+        for (size_t i = 0; string[i] != 0; ++i)
+            v->s.push_back(string[i]);
+        return kResultTrue;
+    }
+
+    // As much of the string as fits, always with its terminator. The size is in bytes, not characters.
+    tresult PLUGIN_API getString(AttrID id, TChar* string, uint32 sizeInBytes) override
+    {
+        const Value* v = find(id, Value::kString);
+        if (v == nullptr)
+            return kResultFalse;
+        const size_t capacity = sizeInBytes / sizeof(TChar);
+        if (string == nullptr || capacity == 0)
+            return kInvalidArgument;
+        const size_t count = std::min(v->s.size(), capacity - 1);
+        std::copy(v->s.begin(), v->s.begin() + static_cast<std::ptrdiff_t>(count), string);
+        string[count] = 0;
+        return kResultTrue;
+    }
+
+    tresult PLUGIN_API setBinary(AttrID id, const void* data, uint32 sizeInBytes) override
+    {
+        if (data == nullptr && sizeInBytes != 0)
+            return kInvalidArgument;
+        Value* v = slot(id, Value::kBinary);
+        if (v == nullptr)
+            return kInvalidArgument;
+        if (sizeInBytes != 0)
+            v->b.assign(static_cast<const char*>(data), sizeInBytes);
+        return kResultTrue;
+    }
+
+    tresult PLUGIN_API getBinary(AttrID id, const void*& data, uint32& sizeInBytes) override
+    {
+        const Value* v = find(id, Value::kBinary);
+        if (v == nullptr)
+            return kResultFalse;
+        data = v->b.data();
+        sizeInBytes = static_cast<uint32>(v->b.size());
+        return kResultTrue;
+    }
+
+    tresult PLUGIN_API queryInterface(const TUID iid, void** obj) override
+    {
+        if (FUnknownPrivate::iidEqual(iid, FUnknown_iid) || FUnknownPrivate::iidEqual(iid, IAttributeList_iid))
+        {
+            addRef();
+            *obj = static_cast<IAttributeList*>(this);
+            return kResultOk;
+        }
+        *obj = nullptr;
+        return kNoInterface;
+    }
+
+    uint32 PLUGIN_API addRef() override { return ++references; }
+
+    uint32 PLUGIN_API release() override
+    {
+        const uint32 left = --references;
+        if (left == 0)
+            delete this;
+        return left;
+    }
+
+private:
+    struct Value
+    {
+        enum Type
+        {
+            kInt,
+            kFloat,
+            kString,
+            kBinary
+        } type = kInt;
+        int64 i = 0;
+        double f = 0;
+        std::vector<TChar> s;
+        std::string b;
+    };
+
+    std::map<std::string, Value> values;
+    uint32 references = 1;
+
+    // A fresh value of this type under the ID, replacing whatever was stored there.
+    Value* slot(AttrID id, Value::Type type)
+    {
+        if (id == nullptr)
+            return nullptr;
+        Value& v = values[id];
+        v = Value();
+        v.type = type;
+        return &v;
+    }
+
+    const Value* find(AttrID id, Value::Type type) const
+    {
+        if (id == nullptr)
+            return nullptr;
+        const auto it = values.find(id);
+        return it != values.end() && it->second.type == type ? &it->second : nullptr;
+    }
+};
+
+class HostMessage final : public IMessage
+{
+public:
+    HostMessage() { ++gMessagesCreated; }
+
+    ~HostMessage()
+    {
+        attributes->release();
+        ++gMessagesDeleted;
+    }
+
+    FIDString PLUGIN_API getMessageID() override { return hasId ? id.c_str() : nullptr; }
+
+    void PLUGIN_API setMessageID(FIDString messageId) override
+    {
+        hasId = messageId != nullptr;
+        id = hasId ? messageId : "";
+    }
+
+    // The message owns its attributes: no reference is added, as in the VST3 SDK's hosting code.
+    IAttributeList* PLUGIN_API getAttributes() override { return attributes; }
+
+    tresult PLUGIN_API queryInterface(const TUID iid, void** obj) override
+    {
+        if (FUnknownPrivate::iidEqual(iid, FUnknown_iid) || FUnknownPrivate::iidEqual(iid, IMessage_iid))
+        {
+            addRef();
+            *obj = static_cast<IMessage*>(this);
+            return kResultOk;
+        }
+        *obj = nullptr;
+        return kNoInterface;
+    }
+
+    uint32 PLUGIN_API addRef() override { return ++references; }
+
+    uint32 PLUGIN_API release() override
+    {
+        const uint32 left = --references;
+        if (left == 0)
+            delete this;
+        return left;
+    }
+
+private:
+    std::string id;
+    bool hasId = false;
+    HostAttributeList* attributes = new HostAttributeList;
+    uint32 references = 1;
+};
+
+// --------------------------------------------------------------------------------------------------------------------
 // Host side objects. They live for the whole process, so reference counting is a no-op.
 
 class HostApplication : public IHostApplication
@@ -325,11 +548,21 @@ public:
         return kResultOk;
     }
 
-    // No IMessage / IAttributeList support yet: the checks never open the editor, so DPF never asks for them.
-    tresult PLUGIN_API createInstance(TUID, TUID, void** obj) override
+    // The messages DPF's editor and controller exchange (above), and nothing else. Only an open editor asks for them.
+    tresult PLUGIN_API createInstance(TUID cid, TUID iid, void** obj) override
     {
+        if (FUnknownPrivate::iidEqual(cid, IMessage_iid) && FUnknownPrivate::iidEqual(iid, IMessage_iid))
+        {
+            *obj = static_cast<IMessage*>(new HostMessage);
+            return kResultTrue;
+        }
+        if (FUnknownPrivate::iidEqual(cid, IAttributeList_iid) && FUnknownPrivate::iidEqual(iid, IAttributeList_iid))
+        {
+            *obj = static_cast<IAttributeList*>(new HostAttributeList);
+            return kResultTrue;
+        }
         *obj = nullptr;
-        return kNotImplemented;
+        return kResultFalse;
     }
 
     tresult PLUGIN_API queryInterface(const TUID iid, void** obj) override
@@ -1611,6 +1844,429 @@ static bool checkInstance(Module& module, const std::string& frozenPath, const s
     return matchesFrozen(frozenPath, json, detail);
 }
 
+#if defined(__APPLE__)
+// --------------------------------------------------------------------------------------------------------------------
+// Check: the editor window (macOS). What the host says to the plugin and what the photos must show are here; the
+// window, the event loop and the photos themselves are in gui_mac.mm.
+
+// How long the event loop runs before a photo. DPF's editor idles every 16 ms and gets the state and the parameter
+// values from the controller within a few of those, so this is generous.
+static const double kFirstDrawSeconds = 3.0;
+static const double kUpdateSeconds = 2.0;
+
+// A window that didn't draw is one flat color: black, or the empty window's background. Wolf Shaper's editor has
+// thousands (an antialiased curve, gradients, text).
+static const double kBlankDominantShare = 0.98;
+static const size_t kBlankFewestColors = 32;
+
+// Two pixels differ much when a color channel is more than 1/8 of full scale apart.
+static const int kMuchDifferent = 32;
+
+// When the host turns Wet with the window open, at least this many pixels must change (the knob's ring moves).
+static const size_t kFewestChangedPixels = 50;
+
+struct ImageStats
+{
+    size_t pixels = 0;
+    size_t colors = 0;          // distinct RGB values
+    uint32_t dominantColor = 0; // 0xRRGGBB, the most common one
+    double dominantShare = 0;
+    double meanBrightness = 0; // 0 to 255
+};
+
+static ImageStats imageStats(const Image& image)
+{
+    ImageStats stats;
+    std::unordered_map<uint32_t, size_t> counts;
+    double brightness = 0;
+    for (size_t p = 0; p + 3 < image.rgba.size(); p += 4)
+    {
+        const uint32_t r = image.rgba[p], g = image.rgba[p + 1], b = image.rgba[p + 2];
+        ++counts[(r << 16) | (g << 8) | b];
+        brightness += 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        ++stats.pixels;
+    }
+    stats.colors = counts.size();
+    size_t most = 0;
+    for (const auto& count : counts)
+    {
+        if (count.second > most)
+        {
+            most = count.second;
+            stats.dominantColor = count.first;
+        }
+    }
+    if (stats.pixels > 0)
+    {
+        stats.dominantShare = static_cast<double>(most) / static_cast<double>(stats.pixels);
+        stats.meanBrightness = brightness / static_cast<double>(stats.pixels);
+    }
+    return stats;
+}
+
+static std::string describeStats(const Image& image, const ImageStats& stats)
+{
+    char text[200];
+    std::snprintf(text, sizeof(text), "%dx%d px, %zu colors, most common #%06X on %.1f %%, mean brightness %.1f",
+                  image.width, image.height, stats.colors, static_cast<unsigned>(stats.dominantColor),
+                  100.0 * stats.dominantShare, stats.meanBrightness);
+    return text;
+}
+
+// The blank-photo rule.
+static bool looksDrawn(const ImageStats& stats, std::string& why)
+{
+    if (stats.pixels == 0)
+    {
+        why = "the picture is empty";
+        return false;
+    }
+    if (stats.dominantShare >= kBlankDominantShare)
+    {
+        char text[80];
+        std::snprintf(text, sizeof(text), "one color covers %.1f %% of it", 100.0 * stats.dominantShare);
+        why = text;
+        return false;
+    }
+    if (stats.colors < kBlankFewestColors)
+    {
+        why = "only " + std::to_string(stats.colors) + " colors";
+        return false;
+    }
+    return true;
+}
+
+struct ImageDifference
+{
+    bool sameSize = false;
+    size_t pixels = 0;
+    size_t differing = 0;     // a color channel differs at all
+    size_t differingMuch = 0; // a color channel differs by more than kMuchDifferent
+    int largest = 0;          // the largest difference in a color channel
+    double mean = 0;          // the mean of each pixel's largest channel difference
+    int left = -1, top = -1, right = -1, bottom = -1; // where the pixels that differ much are, from the top left
+};
+
+static ImageDifference compareImages(const Image& a, const Image& b)
+{
+    ImageDifference d;
+    d.sameSize = a.width == b.width && a.height == b.height && a.rgba.size() == b.rgba.size() &&
+                 a.rgba.size() == static_cast<size_t>(a.width) * static_cast<size_t>(a.height) * 4;
+    if (!d.sameSize)
+        return d;
+    double sum = 0;
+    for (int y = 0; y < a.height; ++y)
+    {
+        for (int x = 0; x < a.width; ++x)
+        {
+            const size_t p = (static_cast<size_t>(y) * static_cast<size_t>(a.width) + static_cast<size_t>(x)) * 4;
+            int largest = 0;
+            for (size_t c = 0; c < 3; ++c)
+                largest = std::max(largest, std::abs(static_cast<int>(a.rgba[p + c]) - static_cast<int>(b.rgba[p + c])));
+            ++d.pixels;
+            sum += largest;
+            d.largest = std::max(d.largest, largest);
+            if (largest > 0)
+                ++d.differing;
+            if (largest > kMuchDifferent)
+            {
+                if (d.differingMuch++ == 0)
+                {
+                    d.left = d.right = x;
+                    d.top = d.bottom = y;
+                }
+                d.left = std::min(d.left, x);
+                d.right = std::max(d.right, x);
+                d.top = std::min(d.top, y);
+                d.bottom = std::max(d.bottom, y);
+            }
+        }
+    }
+    d.mean = d.pixels > 0 ? sum / static_cast<double>(d.pixels) : 0;
+    return d;
+}
+
+static double muchShare(const ImageDifference& d)
+{
+    return d.pixels > 0 ? static_cast<double>(d.differingMuch) / static_cast<double>(d.pixels) : 0;
+}
+
+static std::string describeDifference(const ImageDifference& d)
+{
+    if (!d.sameSize)
+        return "the sizes differ";
+    char text[300];
+    if (d.differingMuch == 0)
+        std::snprintf(text, sizeof(text), "no pixel differs by more than %d, %zu of %zu differ at all (largest %d, mean %.4f)",
+                      kMuchDifferent, d.differing, d.pixels, d.largest, d.mean);
+    else
+        std::snprintf(text, sizeof(text),
+                      "%zu of %zu pixels (%.4f %%) differ by more than %d, in x %d-%d y %d-%d; %zu differ at all "
+                      "(largest %d, mean %.4f)",
+                      d.differingMuch, d.pixels, 100.0 * muchShare(d), kMuchDifferent, d.left, d.right, d.top, d.bottom,
+                      d.differing, d.largest, d.mean);
+    return text;
+}
+
+// The host's side of the editor. The plugin asks the host for a new size through it.
+class PlugFrame final : public IPlugFrame
+{
+public:
+    IPlugView* view = nullptr;
+
+    // Resizes the window, then tells the view (IPlugView::onSize) in the same call when the size changed, as the VST3
+    // documentation of IPlugFrame describes.
+    tresult PLUGIN_API resizeView(IPlugView* from, ViewRect* newSize) override
+    {
+        if (from == nullptr || newSize == nullptr || from != view)
+            return kInvalidArgument;
+        const int width = newSize->right - newSize->left;
+        const int height = newSize->bottom - newSize->top;
+        int windowWidth = 0, windowHeight = 0;
+        guiContentSize(windowWidth, windowHeight);
+        std::printf("GUI resizeView: the plugin asks for %d x %d, the window is %d x %d\n", width, height, windowWidth,
+                    windowHeight);
+        if (width == windowWidth && height == windowHeight)
+            return kResultTrue;
+        if (width <= 0 || height <= 0 || !guiResizeWindow(width, height))
+            return kResultFalse;
+        return view->onSize(newSize);
+    }
+
+    tresult PLUGIN_API queryInterface(const TUID iid, void** obj) override
+    {
+        if (FUnknownPrivate::iidEqual(iid, FUnknown_iid) || FUnknownPrivate::iidEqual(iid, IPlugFrame_iid))
+        {
+            *obj = static_cast<IPlugFrame*>(this);
+            return kResultOk;
+        }
+        *obj = nullptr;
+        return kNoInterface;
+    }
+
+    uint32 PLUGIN_API addRef() override { return 1000; }
+    uint32 PLUGIN_API release() override { return 1000; }
+};
+
+// A parameter's ID, found by its title as a user finds it in a host.
+static bool findParameter(IEditController* controller, const std::string& title, ParamID& id)
+{
+    for (int32 i = 0, count = controller->getParameterCount(); i < count; ++i)
+    {
+        ParameterInfo info{};
+        if (controller->getParameterInfo(i, info) == kResultOk && toUtf8(info.title, 128) == title)
+        {
+            id = info.id;
+            return true;
+        }
+    }
+    return false;
+}
+
+// Photographs the editor, saves the photo, and applies the blank-photo rule.
+static bool photograph(const std::string& path, Image& image, std::string& error)
+{
+    if (!guiCapture(path, image, error))
+        return false;
+    const ImageStats stats = imageStats(image);
+    std::printf("PHOTO %s: %s\n", baseName(path).c_str(), describeStats(image, stats).c_str());
+    std::string why;
+    if (!looksDrawn(stats, why))
+    {
+        error = baseName(path) + " looks blank: " + why;
+        return false;
+    }
+    return true;
+}
+
+static bool checkGui(Module& module, const std::string& bundle, const std::string& statePath,
+                     const std::string& photoPath, const char* wetText, const std::string& wetPhotoPath,
+                     std::string& detail)
+{
+    std::string state;
+    if (!readFile(statePath, state))
+    {
+        detail = "could not read " + statePath;
+        return false;
+    }
+    double wet = -1;
+    if (wetText != nullptr)
+    {
+        char* end = nullptr;
+        wet = std::strtod(wetText, &end);
+        if (end == wetText || *end != 0 || !(wet >= 0 && wet <= 1))
+        {
+            detail = std::string("the Wet value must be from 0 to 1, not ") + wetText;
+            return false;
+        }
+    }
+
+    setHostContext(module.factory);
+    Session session;
+    bool ok = session.open(module.factory, findClasses(module.factory));
+
+    // The state goes in as when a host opens a saved project: component first, then the controller.
+    if (ok)
+        ok = session.step("component setState with " + baseName(statePath), loadComponentState(session.component, state)) &&
+             session.step("controller setComponentState with " + baseName(statePath),
+                          loadControllerState(session.controller, state));
+    ParamID wetId = 0;
+    if (ok && wet >= 0 && !findParameter(session.controller, "Wet", wetId))
+        ok = session.fail("no parameter is titled Wet");
+
+    // The editor, opened in the order the VST3 SDK's own editor host uses.
+    IPlugView* view = nullptr;
+    PlugFrame frame;
+    if (ok)
+    {
+        view = session.controller->createView(ViewType::kEditor);
+        if (view == nullptr)
+            ok = session.fail("createView(\"editor\") returned no view");
+        else
+            session.steps.push_back("createView(\"editor\"): a view");
+    }
+    if (ok)
+        ok = session.step("isPlatformTypeSupported(\"NSView\")", view->isPlatformTypeSupported(kPlatformTypeNSView));
+    if (ok)
+    {
+        frame.view = view;
+        ok = session.step("setFrame", view->setFrame(&frame));
+    }
+    int width = 0, height = 0;
+    if (ok)
+    {
+        ViewRect size;
+        ok = session.step("getSize", view->getSize(&size));
+        width = size.right - size.left;
+        height = size.bottom - size.top;
+        session.steps.push_back("the editor's size: " + std::to_string(width) + " x " + std::to_string(height) + " points");
+        if (ok && (width <= 0 || height <= 0))
+            ok = session.fail("getSize gives an empty size");
+    }
+    bool windowOpen = false, attached = false;
+    std::string error;
+    if (ok)
+    {
+        void* parent = guiOpenWindow(width, height, "Wolf Shaper, " + bundle + " (" CHECK_CPU ")", error);
+        windowOpen = parent != nullptr;
+        if (!windowOpen)
+            ok = session.fail(error);
+        else
+            ok = attached = session.step("attached(NSView)", view->attached(parent, kPlatformTypeNSView));
+    }
+
+    // The first photo, once the editor has had time to draw.
+    Image first;
+    if (ok)
+    {
+        guiRun(kFirstDrawSeconds);
+        if (!photograph(photoPath, first, error))
+            ok = session.fail(error);
+    }
+
+    // The host turns Wet with the window open, as a rack's macro does, and the editor must show it.
+    std::string change;
+    if (ok && wet >= 0)
+    {
+        char what[100];
+        std::snprintf(what, sizeof(what), "setParamNormalized(Wet, ID %u, %g) with the editor open",
+                      static_cast<unsigned>(wetId), wet);
+        ok = session.step(what, session.controller->setParamNormalized(wetId, wet));
+        Image second;
+        if (ok)
+        {
+            guiRun(kUpdateSeconds);
+            if (!photograph(wetPhotoPath, second, error))
+                ok = session.fail(error);
+        }
+        if (ok)
+        {
+            const ImageDifference d = compareImages(first, second);
+            change = describeDifference(d);
+            std::printf("CHANGE after Wet: %s\n", change.c_str());
+            if (d.differingMuch < kFewestChangedPixels)
+                ok = session.fail("the editor didn't show the new Wet value: " + change);
+        }
+    }
+
+    // What the editor drew with, for the record, and on a failure what the whole screen showed.
+    if (windowOpen)
+        std::printf("%s", guiDescribe().c_str());
+    if (!ok && windowOpen)
+        guiCaptureScreen(withSuffix(photoPath, "-screen"));
+
+    // Closed as a host closes it: the view, then the window, then the plugin.
+    if (attached)
+        session.step("removed", view->removed());
+    if (view != nullptr)
+    {
+        session.step("setFrame(nullptr)", view->setFrame(nullptr));
+        view->release();
+    }
+    if (windowOpen)
+    {
+        guiCloseWindow();
+        guiRun(0.2);
+    }
+    session.close();
+    session.printSteps("STEP ");
+    std::printf("MESSAGES %d created, %d deleted\n", gMessagesCreated, gMessagesDeleted);
+
+    if (!session.ok)
+    {
+        detail = session.error;
+        return false;
+    }
+    detail = std::to_string(width) + " x " + std::to_string(height) + " points, " + baseName(photoPath) + " " +
+             describeStats(first, imageStats(first));
+    if (wet >= 0)
+        detail += "; after Wet " + change;
+    return true;
+}
+
+static bool checkImage(const std::string& path, std::string& detail)
+{
+    Image image;
+    if (!guiReadPng(path, image, detail))
+        return false;
+    const ImageStats stats = imageStats(image);
+    detail = baseName(path) + ": " + describeStats(image, stats);
+    std::string why;
+    if (!looksDrawn(stats, why))
+    {
+        detail += "; looks blank: " + why;
+        return false;
+    }
+    return true;
+}
+
+static bool checkCompare(const std::string& path, const std::string& referencePath, const char* maxShareText,
+                         std::string& detail)
+{
+    char* end = nullptr;
+    const double maxShare = std::strtod(maxShareText, &end);
+    if (end == maxShareText || *end != 0 || !(maxShare >= 0 && maxShare <= 1))
+    {
+        detail = std::string("the share must be from 0 to 1, not ") + maxShareText;
+        return false;
+    }
+    Image image, reference;
+    if (!guiReadPng(path, image, detail) || !guiReadPng(referencePath, reference, detail))
+        return false;
+    const ImageDifference d = compareImages(image, reference);
+    if (!d.sameSize)
+    {
+        detail = baseName(path) + " is " + std::to_string(image.width) + "x" + std::to_string(image.height) + " px, " +
+                 referencePath + " " + std::to_string(reference.width) + "x" + std::to_string(reference.height) + " px";
+        return false;
+    }
+    char allowed[80];
+    std::snprintf(allowed, sizeof(allowed), " (allowed: %.4f %%)", 100.0 * maxShare);
+    detail = baseName(path) + " vs " + referencePath + ": " + describeDifference(d) + allowed;
+    return muchShare(d) <= maxShare;
+}
+#endif
+
 // --------------------------------------------------------------------------------------------------------------------
 
 static int usage()
@@ -1619,22 +2275,55 @@ static int usage()
                 "  vst3_check ids <bundle> <ours|official> <class-ids.txt>\n"
                 "  vst3_check params <bundle> <parameters.json> [<write to>]\n"
                 "  vst3_check states <bundle> <state file>...\n"
-                "  vst3_check instance <bundle> <plugin-info.json> [<write to>]\n");
+                "  vst3_check instance <bundle> <plugin-info.json> [<write to>]\n"
+                "  vst3_check gui <bundle> <state file> <photo.png> [<wet> <second photo.png>]   (macOS)\n"
+                "  vst3_check image <photo.png>   (macOS)\n"
+                "  vst3_check compare <photo.png> <reference.png> <max share>   (macOS)\n");
     return 2;
 }
 
 int main(int argc, char* argv[])
 {
-    if (argc < 4)
+    if (argc < 3)
         return usage();
     const std::string check = argv[1];
+
+    // The picture checks only read files.
+    if (check == "image" || check == "compare")
+    {
+        if ((check == "image" && argc != 3) || (check == "compare" && argc != 5))
+            return usage();
+#if defined(__APPLE__)
+        std::printf("vst3_check %s (%s %s)\n", check.c_str(), CHECK_OS, CHECK_CPU);
+        std::string detail;
+        const bool pass = check == "image" ? checkImage(argv[2], detail) : checkCompare(argv[2], argv[3], argv[4], detail);
+        std::printf("RESULT %s %s %s\n", check.c_str(), pass ? "PASS" : "FAIL", detail.c_str());
+        std::fflush(stdout);
+        return pass ? 0 : 1;
+#else
+        std::printf("vst3_check %s works on macOS only\n", check.c_str());
+        return 2;
+#endif
+    }
+
+    if (argc < 4)
+        return usage();
     const std::string bundle = argv[2];
-    if (check != "ids" && check != "params" && check != "states" && check != "instance")
+    if (check != "ids" && check != "params" && check != "states" && check != "instance" && check != "gui")
         return usage();
     if (check == "ids" && argc != 5)
         return usage();
     if ((check == "params" || check == "instance") && argc > 5)
         return usage();
+    if (check == "gui" && argc != 5 && argc != 7)
+        return usage();
+#if !defined(__APPLE__)
+    if (check == "gui")
+    {
+        std::printf("vst3_check gui works on macOS only\n");
+        return 2;
+    }
+#endif
 
     std::printf("vst3_check %s on %s (%s %s)\n", check.c_str(), bundle.c_str(), CHECK_OS, CHECK_CPU);
     std::fflush(stdout);
@@ -1642,6 +2331,15 @@ int main(int argc, char* argv[])
     Module module;
     bool pass = false;
     std::string detail;
+#if defined(__APPLE__)
+    // A host's application is up before it loads a plugin.
+    if (check == "gui" && !guiStart(detail))
+    {
+        std::printf("RESULT %s FAIL %s\n", check.c_str(), detail.c_str());
+        std::fflush(stdout);
+        return 1;
+    }
+#endif
     if (!module.load(bundle))
     {
         detail = "could not load " + bundle;
@@ -1654,8 +2352,13 @@ int main(int argc, char* argv[])
             pass = checkParams(module, argv[3], argc > 4 ? argv[4] : "", detail);
         else if (check == "states")
             pass = checkStates(module, std::vector<std::string>(argv + 3, argv + argc), detail);
-        else
+        else if (check == "instance")
             pass = checkInstance(module, argv[3], argc > 4 ? argv[4] : "", detail);
+#if defined(__APPLE__)
+        else
+            pass = checkGui(module, bundle, argv[3], argv[4], argc == 7 ? argv[5] : nullptr, argc == 7 ? argv[6] : "",
+                            detail);
+#endif
         std::fflush(stdout);
         module.unload();
     }
