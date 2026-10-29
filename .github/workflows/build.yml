@@ -149,6 +149,7 @@ jobs:
       # blocks of 512 and 64, on Apple Silicon and Intel (Rosetta). Each render: block 64 must equal block 512.
       - name: Test signal
         id: signal
+        if: ${{ !cancelled() }}
         run: |
           python3 ci/make_test_signal.py sound-signal
           (cd sound-signal && shasum -a 256 -c ../ci/frozen/test-signal.sha256)
@@ -427,6 +428,7 @@ jobs:
       # The sound, as on macOS (ci/README.md). The official v1.0.2's renders are the Windows side of the comparison.
       - name: Test signal
         id: signal
+        if: ${{ !cancelled() }}
         run: |
           python ci/make_test_signal.py sound-signal
           (cd sound-signal && sha256sum -c ../ci/frozen/test-signal.sha256)
