@@ -2079,6 +2079,22 @@ static bool photograph(const std::string& path, Image& image, std::string& error
     return true;
 }
 
+// The other pictures of what the editor drew (its OpenGL buffers, AppKit's own rendering of the window), saved next to
+// the photo with their numbers, for when the photo shows nothing.
+static void savePictures(const std::string& photoPath)
+{
+    for (const Picture& picture : guiEditorPictures())
+    {
+        const std::string path = withSuffix(photoPath, "-" + picture.name);
+        std::string error = picture.error;
+        if (error.empty() && guiWritePng(path, picture.image, error))
+            std::printf("PICTURE %s: %s\n", baseName(path).c_str(),
+                        describeStats(picture.image, imageStats(picture.image)).c_str());
+        else
+            std::printf("PICTURE %s: none, %s\n", baseName(path).c_str(), error.c_str());
+    }
+}
+
 static bool checkGui(Module& module, const std::string& bundle, const std::string& statePath,
                      const std::string& photoPath, const char* wetText, const std::string& wetPhotoPath,
                      std::string& detail)
@@ -2160,7 +2176,9 @@ static bool checkGui(Module& module, const std::string& bundle, const std::strin
     if (ok)
     {
         guiRun(kFirstDrawSeconds);
-        if (!photograph(photoPath, first, error))
+        const bool drawn = photograph(photoPath, first, error);
+        savePictures(photoPath);
+        if (!drawn)
             ok = session.fail(error);
     }
 

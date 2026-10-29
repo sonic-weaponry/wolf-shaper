@@ -14,12 +14,15 @@
 
 #import <AppKit/AppKit.h>
 #import <ImageIO/ImageIO.h>
+#import <OpenGL/OpenGL.h>
 #import <OpenGL/gl.h>
+#import <QuartzCore/QuartzCore.h>
 
 #include "gui.hpp"
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 
 static NSWindow* gWindow = nil;
 
@@ -260,6 +263,126 @@ void guiCaptureScreen(const std::string& path)
         std::printf("GUI no photo of the whole screen: %s\n", error.c_str());
 }
 
+static NSOpenGLView* findOpenGLView(NSView* view)
+{
+    if ([view isKindOfClass:[NSOpenGLView class]])
+        return (NSOpenGLView*)view;
+    for (NSView* child in [view subviews])
+        if (NSOpenGLView* found = findOpenGLView(child))
+            return found;
+    return nil;
+}
+
+// One of the editor's OpenGL buffers, read with its own context. Whatever was current before is current again
+// afterwards, and the read buffer is restored.
+static bool readOpenGL(NSOpenGLView* view, GLenum buffer, Image& image, std::string& error)
+{
+    const NSSize size = [view convertSizeToBacking:[view bounds].size];
+    const int width = static_cast<int>(std::lround(size.width));
+    const int height = static_cast<int>(std::lround(size.height));
+    if (width <= 0 || height <= 0)
+    {
+        error = "the OpenGL view has no size";
+        return false;
+    }
+    std::vector<uint8_t> rows(static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
+
+    NSOpenGLContext* previous = [NSOpenGLContext currentContext];
+    [[view openGLContext] makeCurrentContext];
+    while (glGetError() != GL_NO_ERROR)
+    {
+    }
+    GLint readBuffer = 0;
+    glGetIntegerv(GL_READ_BUFFER, &readBuffer);
+    glReadBuffer(buffer);
+    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, rows.data());
+    const GLenum status = glGetError();
+    glReadBuffer(static_cast<GLenum>(readBuffer));
+    if (previous != nil)
+        [previous makeCurrentContext];
+    else
+        [NSOpenGLContext clearCurrentContext];
+    if (status != GL_NO_ERROR)
+    {
+        char text[80];
+        std::snprintf(text, sizeof(text), "glReadPixels failed with OpenGL error 0x%X", static_cast<unsigned>(status));
+        error = text;
+        return false;
+    }
+
+    // OpenGL's rows run from the bottom up. Alpha is made opaque, so that the picture shows the colors as they are.
+    const size_t row = static_cast<size_t>(width) * 4;
+    image.width = width;
+    image.height = height;
+    image.rgba.resize(rows.size());
+    for (int y = 0; y < height; ++y)
+        std::memcpy(&image.rgba[static_cast<size_t>(y) * row], &rows[static_cast<size_t>(height - 1 - y) * row], row);
+    for (size_t p = 3; p < image.rgba.size(); p += 4)
+        image.rgba[p] = 255;
+    return true;
+}
+
+std::vector<Picture> guiEditorPictures()
+{
+    std::vector<Picture> pictures;
+    if (gWindow == nil)
+        return pictures;
+    if (NSOpenGLView* view = findOpenGLView([gWindow contentView]))
+    {
+        Picture front{"gl-front", Image(), ""};
+        readOpenGL(view, GL_FRONT, front.image, front.error);
+        pictures.push_back(front);
+        Picture back{"gl-back", Image(), ""};
+        readOpenGL(view, GL_BACK, back.image, back.error);
+        pictures.push_back(back);
+    }
+
+    NSView* content = [gWindow contentView];
+    Picture cache{"appkit", Image(), ""};
+    NSBitmapImageRep* rep = [content bitmapImageRepForCachingDisplayInRect:[content bounds]];
+    if (rep == nil)
+    {
+        cache.error = "no bitmap for cacheDisplayInRect";
+    }
+    else
+    {
+        [content cacheDisplayInRect:[content bounds] toBitmapImageRep:rep];
+        CGImageRef picture = [rep CGImage];
+        if (picture == nullptr)
+            cache.error = "cacheDisplayInRect gave no picture";
+        else
+            toRgba(picture, cache.image, cache.error);
+    }
+    pictures.push_back(cache);
+    return pictures;
+}
+
+bool guiWritePng(const std::string& path, const Image& image, std::string& error)
+{
+    const CGBitmapInfo layout =
+        static_cast<CGBitmapInfo>(kCGImageAlphaPremultipliedLast) | static_cast<CGBitmapInfo>(kCGBitmapByteOrder32Big);
+    CGColorSpaceRef srgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef context = CGBitmapContextCreate(const_cast<uint8_t*>(image.rgba.data()), static_cast<size_t>(image.width),
+                                                 static_cast<size_t>(image.height), 8,
+                                                 static_cast<size_t>(image.width) * 4, srgb, layout);
+    CGColorSpaceRelease(srgb);
+    if (context == nullptr)
+    {
+        error = "could not make a picture to save as " + path;
+        return false;
+    }
+    CGImageRef picture = CGBitmapContextCreateImage(context);
+    CGContextRelease(context);
+    if (picture == nullptr)
+    {
+        error = "could not make a picture to save as " + path;
+        return false;
+    }
+    const bool saved = savePng(picture, path, error);
+    CGImageRelease(picture);
+    return saved;
+}
+
 static void describeView(NSView* view, int depth, NSMutableString* out)
 {
     [out appendFormat:@"GUI view %@%@ %gx%g%@\n", [@"" stringByPaddingToLength:depth * 2 withString:@" " startingAtIndex:0],
@@ -289,10 +412,31 @@ static void describeView(NSView* view, int depth, NSMutableString* out)
             [previous makeCurrentContext];
         else
             [NSOpenGLContext clearCurrentContext];
-        [out appendFormat:@"GUI opengl pixel format: accelerated %d, double buffer %d, profile 0x%X (legacy is 0x%X), "
-                          @"renderer ID 0x%X, best resolution surface %@\n",
+        [out appendFormat:@"GUI opengl view pixel format %@ (%d virtual screens): accelerated %d, double buffer %d, "
+                          @"profile 0x%X (legacy is 0x%X), renderer ID 0x%X, best resolution surface %@\n",
+                          format != nil ? @"set" : @"nil", format != nil ? [format numberOfVirtualScreens] : 0,
                           accelerated, doubleBuffer, profile, static_cast<unsigned>(NSOpenGLProfileVersionLegacy),
                           rendererId, yesNo([glView wantsBestResolutionOpenGLSurface])];
+
+        // The pixel format the context really uses, which can differ from the view's.
+        CGLContextObj cgl = [[glView openGLContext] CGLContextObj];
+        CGLPixelFormatObj pixelFormat = cgl != nullptr ? CGLGetPixelFormat(cgl) : nullptr;
+        GLint cglAccelerated = -1, cglDoubleBuffer = -1, cglRenderer = -1, cglProfile = -1, current = -1;
+        if (pixelFormat != nullptr)
+        {
+            CGLDescribePixelFormat(pixelFormat, 0, kCGLPFAAccelerated, &cglAccelerated);
+            CGLDescribePixelFormat(pixelFormat, 0, kCGLPFADoubleBuffer, &cglDoubleBuffer);
+            CGLDescribePixelFormat(pixelFormat, 0, kCGLPFARendererID, &cglRenderer);
+            CGLDescribePixelFormat(pixelFormat, 0, kCGLPFAOpenGLProfile, &cglProfile);
+        }
+        if (cgl != nullptr)
+            CGLGetParameter(cgl, kCGLCPCurrentRendererID, &current);
+        CALayer* layer = [glView layer];
+        [out appendFormat:@"GUI opengl context pixel format %@: accelerated %d, double buffer %d, renderer ID 0x%X, "
+                          @"profile 0x%X; current renderer ID 0x%X; layer %@, %@\n",
+                          pixelFormat != nullptr ? @"set" : @"nil", cglAccelerated, cglDoubleBuffer, cglRenderer,
+                          cglProfile, current, layer != nil ? NSStringFromClass([layer class]) : @"none",
+                          layer != nil && [layer contents] != nil ? @"with contents" : @"without contents"];
     }
     for (NSView* child in [view subviews])
         describeView(child, depth + 1, out);

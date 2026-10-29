@@ -52,6 +52,19 @@ bool guiCapture(const std::string& path, Image& image, std::string& error);
 // The whole screen, to see what went wrong.
 void guiCaptureScreen(const std::string& path);
 
+// Other pictures of what the editor drew, for when the photo shows nothing: what its OpenGL context holds in the front
+// and back buffers (glReadPixels), and what AppKit draws of the window's content view itself (cacheDisplayInRect).
+// Each has a short name, and either a picture or the reason there is none.
+struct Picture
+{
+    std::string name;
+    Image image;
+    std::string error;
+};
+std::vector<Picture> guiEditorPictures();
+
+bool guiWritePng(const std::string& path, const Image& image, std::string& error);
+
 // Screen, window and OpenGL facts for the log, one "GUI ..." line each.
 std::string guiDescribe();
 

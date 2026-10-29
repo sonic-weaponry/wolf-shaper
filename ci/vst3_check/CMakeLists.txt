@@ -17,7 +17,7 @@ if(APPLE)
   target_sources(vst3_check PRIVATE gui_mac.mm)
   set_source_files_properties(gui_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   target_link_libraries(vst3_check PRIVATE "-framework CoreFoundation" "-framework AppKit" "-framework ImageIO"
-                                           "-framework OpenGL")
+                                           "-framework OpenGL" "-framework QuartzCore")
 elseif(WIN32)
   target_link_libraries(vst3_check PRIVATE ole32)
 else()
