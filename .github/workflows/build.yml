@@ -504,10 +504,11 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
-  # Private states (saved by users of the plugin) through our macOS build, for the null test against Windows. They come
+  # Private states (saved by users of the plugin) through our macOS build, for the null test against Windows, and
+  # checked like the public ones: each loads under de_DE.UTF-8 as under "C" and saves back byte for byte. They come
   # from the private-tests environment, which only sw/* branches can use and which pull requests never reach. Nothing
   # readable leaves the job: ci/run_private_sound.sh keeps every render and log in a temporary folder, encrypts them
-  # to a public key, and prints counts only.
+  # to a public key, and prints counts only. The encrypted results are uploaded even when a check fails, for diagnosis.
   macos-private:
     needs: macos
     if: ${{ !cancelled() && github.event_name != 'pull_request' && github.repository == 'sonic-weaponry/wolf-shaper' }}
@@ -564,6 +565,7 @@ jobs:
         run: bash ci/run_private_sound.sh ci/vst3_check/build/vst3_check ours/wolf-shaper.vst3 official/wolf-shaper.vst3 sound-signal "$RUNNER_TEMP/private-results.tar.gz.gpg"
 
       - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
         with:
           name: private-results-encrypted
           path: ${{ runner.temp }}/private-results.tar.gz.gpg

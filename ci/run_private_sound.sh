@@ -9,8 +9,10 @@
 #
 # What it renders: our build on arm64 and x86_64 (Rosetta) at 44.1 and 48 kHz, blocks of 512 and 64, and the official
 # v1.0.2 on arm64 at both rates, block 512. Then, all inside the archive: block 64 against block 512, our build against
-# the official v1.0.2, and the locale check (de_DE.UTF-8) on both builds. The plaintext stays in a private temporary
-# folder outside the workspace, so no upload step can pick it up, and is deleted at the end.
+# the official v1.0.2, and on both builds and both CPUs the locale check (each state loads under de_DE.UTF-8 as under
+# "C") and the states check (each state saves back byte for byte). Our build must pass those two; the official v1.0.2
+# runs them for reference. The plaintext stays in a private temporary folder outside the workspace, so no upload step
+# can pick it up, and is deleted at the end.
 
 tool=$1
 ours=$2
@@ -97,12 +99,30 @@ for label in macos-arm64-ours macos-x86_64-ours; do
     done
     [ ${#pairs[@]} -gt 0 ] && null_test "$label against the official v1.0.2 on arm64" "${pairs[@]}"
 done
-for bundle in "$ours" "$official"; do
+# The states in a decimal-comma C locale, and back to disk. Each prints a "RESULT locale|states PASS|FAIL" line.
+locale_ok=0
+states_ok=0
+for build in ours official; do
+    bundle=$ours
+    [ "$build" = official ] && bundle=$official
     for launcher in "" "arch -x86_64"; do
-        {
-            echo "=== locale: $bundle ${launcher:-arm64}"
-            $launcher "$tool" locale "$bundle" de_DE.UTF-8 "${states[@]}" 2>&1
-        } >>"$log"
+        for check in locale states; do
+            if [ "$check" = locale ]; then
+                output=$($launcher "$tool" locale "$bundle" de_DE.UTF-8 "${states[@]}" 2>&1)
+            else
+                output=$($launcher "$tool" states "$bundle" "${states[@]}" 2>&1)
+            fi
+            code=$?
+            printf '=== %s: %s %s\n%s\n' "$check" "$build" "${launcher:-arm64}" "$output" >>"$log"
+            if [ "$build" = ours ] && [ "$code" -eq 0 ] &&
+                ! printf '%s\n' "$output" | grep -q -e 'assertion failure' -e 'DPF warning'; then
+                if [ "$check" = locale ]; then
+                    locale_ok=$((locale_ok + 1))
+                else
+                    states_ok=$((states_ok + 1))
+                fi
+            fi
+        done
     done
 done
 
@@ -117,5 +137,6 @@ if ! tar -czf "$work/bundle.tar.gz" -C "$work/out" . ||
 fi
 
 echo "PRIVATE SOUND: ${#states[@]} states, $renders renders done, $render_failures failed; block 64 = block 512 for" \
-    "$blocks_ok of 2 builds; results encrypted ($(wc -c <"$encrypted" | tr -d ' ') bytes)"
-[ "$render_failures" -eq 0 ] && [ "$blocks_ok" -eq 2 ]
+    "$blocks_ok of 2 builds; our build loads them under de_DE.UTF-8 as under \"C\" on $locale_ok of 2 CPUs and saves" \
+    "them back byte for byte on $states_ok of 2; results encrypted ($(wc -c <"$encrypted" | tr -d ' ') bytes)"
+[ "$render_failures" -eq 0 ] && [ "$blocks_ok" -eq 2 ] && [ "$locale_ok" -eq 2 ] && [ "$states_ok" -eq 2 ]
