@@ -2272,9 +2272,9 @@ static bool checkRender(Module& module, const std::string& statePath, const std:
 }
 
 // --------------------------------------------------------------------------------------------------------------------
-// Check: locale. DPF reads saved parameter values with atof and writes them with printf-style formatting, and both
-// follow the C locale of the process, which a host shares with every plugin it loads (on macOS and Linux; on Windows
-// each C runtime has its own). This loads each state with the process in "C" and in a decimal-comma locale.
+// Check: locale. DPF a4c83bfd reads saved parameter values with atof, which follows the C locale of the process, and a
+// host shares that locale with every plugin it loads (on macOS and Linux; on Windows each C runtime has its own). It
+// writes them in the "C" locale. This loads each state with the process in "C" and in a decimal-comma locale.
 
 struct LoadedState
 {

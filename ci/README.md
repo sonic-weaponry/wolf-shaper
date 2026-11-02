@@ -65,7 +65,7 @@ one from the other and measure what's left.
 | `vst3_check render` | Opens the plugin as a host does, sets up 32-bit float processing at the signal's rate and the given block size, loads the state (component `setState`, controller `setComponentState`), activates the plugin, plays 10 s of silence, then the signal (mono to both channels), and writes the output as a 32-bit float stereo WAV. Fails on NaN or infinity |
 | `ci/run_sound_checks.sh` | Renders every public test state at both rates in blocks of 512 and 64. The two block sizes must give bit-identical output: Wolf Shaper works sample by sample |
 | `ci/null_test.py` | Per pair of renders: "bit-identical", or the residual's peak and RMS in dBFS and where its peak is |
-| `vst3_check locale` | Loads each state in the "C" locale and in de_DE.UTF-8 (decimal comma) and compares the values the controller shows and the state saved back. DPF a4c83bfd reads saved values with `atof` and writes them with printf-style formatting, both of which follow the C locale the host process runs in |
+| `vst3_check locale` | Loads each state in the "C" locale and in de_DE.UTF-8 (decimal comma) and compares the values the controller shows and the state saved back. DPF a4c83bfd reads saved values with `atof`, which follows the C locale the host process runs in (it writes them in the "C" locale) |
 
 On macOS both builds render natively on Apple Silicon and through Rosetta as Intel code; on Windows the same with the
 official v1.0.2 and our Windows build. The `sound-compare` job nulls our macOS renders against the Windows ones. The
@@ -74,7 +74,12 @@ limits come from the reviewed results: on Windows our build must equal the offic
 states bit-identical or below -129 dBFS), and its x86_64 slice against the official macOS build and against its own
 arm64 slice below -100 dBFS too. Our arm64 slice is built without fused multiply-adds (src/Makefile) so that it
 computes like the Windows build; the official macOS build fuses them, so that pair (up to -76 dBFS apart on the sharp
-test curves) is only reported. The locale check only reports: the official v1.0.2 behaves the same.
+test curves) is only reported.
+
+The locale check is a limit too. Our DPF fork reads saved values in the "C" locale (falkTX's upstream commits 50a55c6e
+and c24763e9), so our build, on Apple Silicon and through Rosetta, must load and save every public test state under
+de_DE.UTF-8 exactly as under "C". The official v1.0.2 reads them in the process's locale ("0.98" becomes 0 under a
+decimal comma) and must still fail the check: the control that proves the check sees the problem.
 
 Two facts about Wolf Shaper v1.0.2 that the renders have to respect:
 - **The knobs glide.** After a state loads, Pre Gain, Wet, Post Gain and the warp amounts glide to their new values

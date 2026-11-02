@@ -182,22 +182,51 @@ jobs:
           python3 ci/null_test.py --label "arm64: our build against the official v1.0.2 (report only)" --dirs $r/macos-arm64-official $r/macos-arm64-ours
           python3 ci/null_test.py --label "official v1.0.2: x86_64 against arm64 (report only)" --dirs $r/macos-arm64-official $r/macos-x86_64-official
 
-      # DPF reads saved values with atof, which follows the process's C locale (ci/README.md). Report only: the
-      # official v1.0.2 behaves the same, and whether to change it is a separate decision.
-      - name: Locale, de_DE.UTF-8 (report only)
-        if: ${{ !cancelled() && steps.tool.outcome == 'success' }}
+      # Saved values under a decimal-comma C locale, which a host process shares with every plugin it loads
+      # (ci/README.md). Our DPF reads saved values in the "C" locale (falkTX's fix), so our build must load and save
+      # every public test state under de_DE.UTF-8 exactly as under "C", without a DPF assertion or warning.
+      - name: Locale, de_DE.UTF-8, our build (arm64 and x86_64)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.tool.outcome == 'success' }}
         run: |
-          for build in official ours; do
-            bundle=bin/wolf-shaper.vst3
-            [ "$build" = official ] && bundle=official/wolf-shaper.vst3
-            for launcher in "" "arch -x86_64"; do
-              out=$($launcher ci/vst3_check/build/vst3_check locale "$bundle" de_DE.UTF-8 ci/frozen/states/*.vst3state 2>&1) || true
-              echo "::group::$build ${launcher:-arm64}"
-              echo "$out"
-              echo "::endgroup::"
-              echo "$out" | grep '^RESULT' | sed "s/^/$build ${launcher:-arm64}: /"
-            done
+          failed=0
+          for launcher in "" "arch -x86_64"; do
+            code=0
+            out=$($launcher ci/vst3_check/build/vst3_check locale bin/wolf-shaper.vst3 de_DE.UTF-8 ci/frozen/states/*.vst3state 2>&1) || code=$?
+            echo "::group::ours ${launcher:-arm64}"
+            echo "$out"
+            echo "::endgroup::"
+            result=$(grep '^RESULT' <<<"$out" | tail -n 1) || true
+            if [ "$code" -eq 0 ] && grep -q '^RESULT locale PASS' <<<"$result" &&
+                ! grep -q -e 'assertion failure' -e 'DPF warning' <<<"$out"; then
+              echo "ours ${launcher:-arm64}: PASS: $result"
+            else
+              echo "ours ${launcher:-arm64}: FAIL: $result"
+              failed=1
+            fi
           done
+          exit $failed
+
+      # The control: the official v1.0.2 reads saved values in the process's locale, so the check must still find
+      # states that load differently under de_DE.UTF-8. If it didn't, the check above would prove nothing.
+      - name: Locale, de_DE.UTF-8, official v1.0.2 (must still fail)
+        if: ${{ !cancelled() && steps.official.outcome == 'success' && steps.tool.outcome == 'success' }}
+        run: |
+          failed=0
+          for launcher in "" "arch -x86_64"; do
+            code=0
+            out=$($launcher ci/vst3_check/build/vst3_check locale official/wolf-shaper.vst3 de_DE.UTF-8 ci/frozen/states/*.vst3state 2>&1) || code=$?
+            echo "::group::official ${launcher:-arm64}"
+            echo "$out"
+            echo "::endgroup::"
+            result=$(grep '^RESULT' <<<"$out" | tail -n 1) || true
+            if [ "$code" -eq 1 ] && grep -q -E '^RESULT locale FAIL [1-9][0-9]* of [0-9]+ states load or save differently' <<<"$result"; then
+              echo "official ${launcher:-arm64}: fails as expected: $result"
+            else
+              echo "official ${launcher:-arm64}: FAIL, the control didn't find the locale problem: $result"
+              failed=1
+            fi
+          done
+          exit $failed
 
       - name: Keep our block-512 renders for the comparison with Windows
         if: ${{ !cancelled() && steps.signal.outcome == 'success' }}
