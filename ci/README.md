@@ -34,7 +34,7 @@ macOS runner, natively and as Intel code through Rosetta:
 
 | Check | What it does |
 |---|---|
-| `gui` | Loads a test state into the component and the controller, opens the editor the way the VST3 SDK's own editor host does (`createView`, `setFrame`, `getSize`, a window of that size, `attached`), and lets it run for 3 seconds. Then it reads what the editor drew from its OpenGL buffer (`glReadPixels` with the editor's own context). That picture must not be blank: no color may cover 98 % or more of it, and it must have at least 32 colors. With the nine-point test curve, the host then sets Wet to 0.25 with the window open, as a rack's macro does, and a second picture must show the knob move (at least 50 pixels change) |
+| `gui` | Loads a test state into the component and the controller, opens the editor the way the VST3 SDK's own editor host does (`createView`, `setFrame`, `getSize`, a window of that size, `attached`), and waits until the editor has settled (see "When a picture is taken" below). Then it reads what the editor drew from its OpenGL buffer (`glReadPixels` with the editor's own context). That picture must not be blank: no color may cover 98 % or more of it, and it must have at least 32 colors. With the nine-point test curve, the host then sets Wet to 0.25 with the window open, as a rack's macro does, and once the editor has settled again a second picture must show the knob move (at least 50 pixels change) |
 | `compare` | Each picture of our build against the official v1.0.2's picture of the same state, drawn on the same runner just before: the same size, and at most `GUI_MAX_DIFFERENT_SHARE` of the pixels may differ by more than 1/8 of full scale in a color channel. Measured: no pixel differs at all, so the limit is 0.01 % (about 40 pixels) |
 
 Why the editor's own picture and not a photo of the window: GitHub's macOS runners are virtual machines without a GPU.
@@ -47,12 +47,26 @@ runner that does show OpenGL windows would be noticed.
 What the runner can't show: the last step on a real Mac, where its graphics card puts the editor's frames into the
 window. That code is the same in our build and the official one, so the Mac customer's test covers it.
 
+When a picture is taken: the check used to run the event loop for a fixed 3 seconds (2 after the Wet change). Twice
+so far, the first editor a job opened through Rosetta stalled for seconds on a fresh runner: after 3
+seconds it had had only about 4 ticks of its 16 ms timer instead of dozens, macOS didn't report its window visible
+yet, and its picture showed the Remove DC switch ("CENTER", on) before its 0.2 s light-up was drawn. The values were
+there (DPF hands the editor every value inside `attached`); the frames weren't. So the fixed time is now only the
+least wait. Before each picture the check also waits until macOS reports the window visible, the values have reached
+the editor (the controller's opening values, or the new Wet value), at least 0.5 s and 10 timer ticks have passed
+since then, and two reads of the picture 5 ticks apart are identical. It sees the ticks and the values in DPF's own
+messages between the editor and the controller ("idle", "parameter-set" and "ready" for the editor), which the host
+creates for the plugin. If that doesn't happen within `GUI_TIME_LIMIT_SECONDS` (30 by default), the check fails and
+says what was missing. The log line `WAIT` says when the editor settled, and `OLD RULE` what the fixed wait would
+have seen: whether the window was visible, how many ticks the editor had, and whether that picture differs from the
+settled one. A newer DPF that renamed those messages would make the wait fail with that message, never pass wrongly.
+
 The pictures land in `ci-results/<label>/gui/`: what the editor drew as `<state>.png`, the photo of the window as
 `<state>-window.png`, and on a failure the whole screen as `<state>-screen.png`. The `gui` log also records what the
 editor drew with: the OpenGL renderer and the pixel format it got, the screen's scale and whether macOS considered the
-window visible. `ci/self_test_gui.sh` proves that the two checks can fail: a black and a flat gray picture must fail
-the blank rule, and the pictures of two different states, or of one state before and after the host turned Wet, must
-not match.
+window visible. `ci/self_test_gui.sh` proves that the checks can fail: a black and a flat gray picture must fail the
+blank rule, the pictures of two different states, or of one state before and after the host turned Wet, must not
+match, and a `gui` check whose time limit (1 s) passes before the editor has settled must fail and say so.
 
 ## The sound
 A fix for the class ID must not change how Wolf Shaper sounds. The sound checks play one test signal through our

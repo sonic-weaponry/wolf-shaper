@@ -45,6 +45,9 @@ bool guiResizeWindow(int width, int height);
 // Runs the event loop, which lets the plugin draw and run its timers.
 void guiRun(double seconds);
 
+// Whether macOS reports the window visible (its occlusion state).
+bool guiWindowVisible();
+
 // What the editor drew: its OpenGL buffer, read with its own context (glReadPixels). The front buffer, or the back one
 // when the front can't be read; buffer says which.
 bool guiReadEditor(Image& image, std::string& buffer, std::string& error);

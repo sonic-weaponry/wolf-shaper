@@ -143,7 +143,7 @@ jobs:
       - name: GUI self-test (each GUI check must fail on a wrong picture)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.tool.outcome == 'success' }}
         timeout-minutes: 5
-        run: bash ci/self_test_gui.sh ci/vst3_check/build/vst3_check macos-arm64-ours
+        run: bash ci/self_test_gui.sh ci/vst3_check/build/vst3_check macos-arm64-ours bin/wolf-shaper.vst3
 
       # The sound (ci/README.md): the public test states through the official v1.0.2 and our build, at 44.1 and 48 kHz,
       # blocks of 512 and 64, on Apple Silicon and Intel (Rosetta). Each render: block 64 must equal block 512.

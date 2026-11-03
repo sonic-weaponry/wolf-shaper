@@ -24,6 +24,8 @@
 //       Loads the state, opens the editor in a window the way a host does, and saves what the editor drew (its OpenGL
 //       buffer), which must not be blank, plus a photo of the window for the record. With <wet>, the host then sets
 //       the Wet parameter to that normalized value with the window open, and the second picture must show the change.
+//       Each picture waits until the editor has settled (see kEditorSettleSeconds), for at most
+//       GUI_TIME_LIMIT_SECONDS (default 30) or the check fails.
 //   vst3_check image <picture.png>   (macOS)
 //       The blank-picture rule of the gui check, on a picture file.
 //   vst3_check compare <picture.png> <reference.png> <max share>   (macOS)
@@ -63,6 +65,7 @@
 #include "gui.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <clocale>
 #include <cmath>
 #include <cstddef>
@@ -346,6 +349,18 @@ static bool matchesFrozen(const std::string& frozenPath, const std::string& gene
 static int gMessagesCreated = 0;
 static int gMessagesDeleted = 0;
 
+// What the host sees of the editor's traffic with the controller, which the gui check waits on. DPF's editor sends
+// "idle" on each tick of its 16 ms timer, and the controller answers with a "parameter-set" for each value that changed
+// and a "ready", both marked for the editor (__dpf_msg_target__ 2). The opening values come the same way, inside
+// attached(). A message is released for the last time after its delivery, so by then what it carried has arrived.
+struct EditorTraffic
+{
+    int ticks = 0;                  // "idle", from the editor
+    int readies = 0;                // "ready", to the editor
+    std::map<int64, double> values; // the last value sent to the editor, by parameter ID
+};
+static EditorTraffic gEditor;
+
 class HostAttributeList final : public IAttributeList
 {
 public:
@@ -502,6 +517,7 @@ public:
 
     ~HostMessage()
     {
+        noteEditorTraffic();
         attributes->release();
         ++gMessagesDeleted;
     }
@@ -544,6 +560,28 @@ private:
     bool hasId = false;
     HostAttributeList* attributes = new HostAttributeList;
     uint32 references = 1;
+
+    // What this message carried between the editor and the controller (EditorTraffic).
+    void noteEditorTraffic() const
+    {
+        if (!hasId)
+            return;
+        if (id == "idle")
+        {
+            ++gEditor.ticks;
+            return;
+        }
+        int64 target = 0;
+        if (attributes->getInt("__dpf_msg_target__", target) != kResultTrue || target != 2)
+            return;
+        int64 parameter = 0;
+        double value = 0;
+        if (id == "ready")
+            ++gEditor.readies;
+        else if (id == "parameter-set" && attributes->getInt("rindex", parameter) == kResultTrue &&
+                 attributes->getFloat("value", value) == kResultTrue)
+            gEditor.values[parameter] = value;
+    }
 };
 
 // --------------------------------------------------------------------------------------------------------------------
@@ -2401,10 +2439,23 @@ static bool checkLocale(Module& module, const std::string& localeName, const std
 // Check: the editor window (macOS). What the host says to the plugin and what the pictures must show are here; the
 // window, the event loop and the pictures themselves are in gui_mac.mm.
 
-// How long the event loop runs before the pictures. DPF's editor idles every 16 ms and gets the state and the
-// parameter values from the controller within a few of those, so this is generous.
+// The least time the event loop runs before a picture: after the editor opens, and after the host turns Wet. These
+// used to be the whole wait. On a fresh runner the first editor opened through Rosetta can stall for seconds, and twice
+// its picture after 3 s caught the Remove DC switch ("CENTER", on) before its light-up was drawn, in a window macOS
+// didn't report visible yet. So the editor must also have settled (waitForEditor).
 static const double kFirstDrawSeconds = 3.0;
 static const double kUpdateSeconds = 2.0;
+
+// Settled means: macOS reports the window visible, the values have reached the editor (the controller's opening ones,
+// or the new Wet value), and since then at least kEditorSettleSeconds and kEditorSettleTicks ticks of the editor's
+// 16 ms timer have passed (the switch lights up over 0.2 s, moved on by those ticks; each tick redraws the whole
+// editor). Then two reads of the picture kEditorSteadyTicks ticks apart must be identical. All within the time limit,
+// or the check fails.
+static const double kEditorSettleSeconds = 0.5;
+static const int kEditorSettleTicks = 10;
+static const int kEditorSteadyTicks = 5;
+static const double kEditorTimeLimitSeconds = 30.0; // GUI_TIME_LIMIT_SECONDS overrides it
+static const double kEditorWaitStepSeconds = 0.02;
 
 // An editor that didn't draw leaves one flat color: black, or an empty window's background. Wolf Shaper's editor has
 // thousands (an antialiased curve, gradients, text).
@@ -2560,6 +2611,148 @@ static std::string describeDifference(const ImageDifference& d)
     return text;
 }
 
+static bool valueArrived(int64 parameter, double value)
+{
+    const auto it = gEditor.values.find(parameter);
+    return it != gEditor.values.end() && std::fabs(it->second - value) <= 1e-6 * std::max(1.0, std::fabs(value));
+}
+
+static std::string sinceText(double seconds)
+{
+    if (seconds < 0)
+        return "never";
+    char text[40];
+    std::snprintf(text, sizeof(text), "from %.2f s", seconds);
+    return text;
+}
+
+// Runs the event loop until the editor has settled (see kEditorSettleSeconds), then reads its picture. The values it
+// waits for are the controller's opening ones when parameter is below 0, else that parameter's value. Also prints what
+// the old fixed wait would have read ("OLD RULE"), so that every run measures the flake. Fails with what was missing
+// when the time limit, counted like the least wait from the call, passes first.
+static bool waitForEditor(const std::string& name, double leastSeconds, int64 parameter, double value,
+                          const std::string& valuesName, double limitSeconds, Image& picture, std::string& buffer,
+                          std::string& error)
+{
+    using Clock = std::chrono::steady_clock;
+    const Clock::time_point start = Clock::now();
+    const int startTicks = gEditor.ticks;
+    double visibleAt = -1, valuesAt = -1, readyAt = -1;
+    int readyTicks = 0;
+
+    bool oldTaken = false, oldVisible = false, oldValues = false;
+    int oldTicks = 0;
+    double oldAt = 0;
+    Image oldPicture;
+    std::string oldBuffer, oldError;
+
+    bool haveCandidate = false;
+    Image candidate;
+    int candidateTicks = 0, reads = 0;
+
+    for (;;)
+    {
+        const double now = std::chrono::duration<double>(Clock::now() - start).count();
+        const bool visible = guiWindowVisible();
+        const bool values = parameter < 0 ? gEditor.readies > 0 : valueArrived(parameter, value);
+        if (visible && visibleAt < 0)
+            visibleAt = now;
+        if (values && valuesAt < 0)
+            valuesAt = now;
+        if (!visible || !values)
+        {
+            readyAt = -1;
+            haveCandidate = false;
+        }
+        else if (readyAt < 0)
+        {
+            readyAt = now;
+            readyTicks = gEditor.ticks;
+        }
+
+        if (!oldTaken && now >= leastSeconds)
+        {
+            oldTaken = true;
+            oldAt = now;
+            oldVisible = visible;
+            oldValues = values;
+            oldTicks = gEditor.ticks - startTicks;
+            if (!guiReadEditor(oldPicture, oldBuffer, oldError))
+                oldPicture = Image();
+        }
+
+        const bool settled = now >= leastSeconds && readyAt >= 0 && now - readyAt >= kEditorSettleSeconds &&
+                             gEditor.ticks - readyTicks >= kEditorSettleTicks;
+        bool steady = false;
+        if (settled && (!haveCandidate || gEditor.ticks - candidateTicks >= kEditorSteadyTicks))
+        {
+            Image current;
+            if (!guiReadEditor(current, buffer, error))
+                return false;
+            ++reads;
+            if (haveCandidate)
+            {
+                const ImageDifference d = compareImages(current, candidate);
+                steady = d.sameSize && d.differing == 0;
+            }
+            candidate = std::move(current);
+            candidateTicks = gEditor.ticks;
+            haveCandidate = true;
+        }
+
+        if (steady || now >= limitSeconds)
+        {
+            std::printf("WAIT %s: %s after %.2f s (least %.1f s, limit %.1f s): visible to macOS %s, %s in %s, "
+                        "%d editor ticks, %d reads of the picture\n",
+                        name.c_str(), steady ? "settled" : "NOT SETTLED", now, leastSeconds, limitSeconds,
+                        sinceText(visibleAt).c_str(), valuesName.c_str(), sinceText(valuesAt).c_str(),
+                        gEditor.ticks - startTicks, reads);
+            if (!oldTaken)
+                std::printf("OLD RULE %s: not reached\n", name.c_str());
+            else
+            {
+                std::string compared;
+                if (oldPicture.rgba.empty())
+                    compared = "no picture: " + oldError;
+                else if (!steady)
+                    compared = "picture not compared";
+                else
+                {
+                    const ImageDifference d = compareImages(oldPicture, candidate);
+                    compared = d.sameSize && d.differing == 0 ? std::string("same picture as settled")
+                                                              : "DIFFERENT picture: " + describeDifference(d);
+                }
+                std::printf("OLD RULE %s at %.2f s: visible to macOS %s, %s in %s, %d editor ticks; %s\n", name.c_str(),
+                            oldAt, oldVisible ? "yes" : "no", valuesName.c_str(), oldValues ? "yes" : "no", oldTicks,
+                            compared.c_str());
+            }
+            if (steady)
+            {
+                picture = std::move(candidate);
+                return true;
+            }
+
+            char text[300];
+            if (now < leastSeconds)
+                std::snprintf(text, sizeof(text), "the least wait is %.1f s", leastSeconds);
+            else if (!visible)
+                std::snprintf(text, sizeof(text), "macOS does not report the window visible");
+            else if (!values)
+                std::snprintf(text, sizeof(text), "%s did not reach the editor", valuesName.c_str());
+            else if (!settled)
+                std::snprintf(text, sizeof(text), "%d editor ticks in %.2f s since it was ready, not %d in %.1f s",
+                              gEditor.ticks - readyTicks, now - readyAt, kEditorSettleTicks, kEditorSettleSeconds);
+            else
+                std::snprintf(text, sizeof(text), "its picture kept changing (%d reads)", reads);
+            char limit[80];
+            std::snprintf(limit, sizeof(limit), "the editor did not settle within %g s: ", limitSeconds);
+            error = name + ": " + limit + text;
+            return false;
+        }
+        guiRun(kEditorWaitStepSeconds);
+    }
+}
+
 // The host's side of the editor. The plugin asks the host for a new size through it.
 class PlugFrame final : public IPlugFrame
 {
@@ -2615,14 +2808,14 @@ static bool findParameter(IEditController* controller, const std::string& title,
     return false;
 }
 
-// The editor's picture: what it drew into its OpenGL buffer, saved at path. That is what the blank rule and the
-// comparisons look at (ci/README.md). The window as the screen shows it is photographed too and saved next to it
-// ("-window"), for the record: on a runner without a GPU it stays white whatever the editor draws, for the official
-// release as for ours.
-static bool takePictures(const std::string& path, Image& image, std::string& windowNote, std::string& error)
+// The editor's picture: what it drew into its OpenGL buffer once it settled (waitForEditor), saved at path. That is
+// what the blank rule and the comparisons look at (ci/README.md). The window as the screen shows it is photographed too
+// and saved next to it ("-window"), for the record: on a runner without a GPU it stays white whatever the editor draws,
+// for the official release as for ours.
+static bool takePictures(const std::string& path, const Image& image, const std::string& buffer,
+                         std::string& windowNote, std::string& error)
 {
-    std::string buffer;
-    if (!guiReadEditor(image, buffer, error) || !guiWritePng(path, image, error))
+    if (!guiWritePng(path, image, error))
         return false;
     const ImageStats stats = imageStats(image);
     std::printf("PICTURE %s, from the editor's OpenGL %s buffer: %s\n", baseName(path).c_str(), buffer.c_str(),
@@ -2670,6 +2863,17 @@ static bool checkGui(Module& module, const std::string& bundle, const std::strin
         if (end == wetText || *end != 0 || !(wet >= 0 && wet <= 1))
         {
             detail = std::string("the Wet value must be from 0 to 1, not ") + wetText;
+            return false;
+        }
+    }
+    double limit = kEditorTimeLimitSeconds;
+    if (const char* limitText = std::getenv("GUI_TIME_LIMIT_SECONDS"))
+    {
+        char* end = nullptr;
+        limit = std::strtod(limitText, &end);
+        if (end == limitText || *end != 0 || !(limit > 0))
+        {
+            detail = std::string("GUI_TIME_LIMIT_SECONDS must be a number of seconds above 0, not ") + limitText;
             return false;
         }
     }
@@ -2728,13 +2932,15 @@ static bool checkGui(Module& module, const std::string& bundle, const std::strin
             ok = attached = session.step("attached(NSView)", view->attached(parent, kPlatformTypeNSView));
     }
 
-    // The first pictures, once the editor has had time to draw.
+    // The first pictures, once the editor has settled.
     Image first;
     std::string windowNote;
     if (ok)
     {
-        guiRun(kFirstDrawSeconds);
-        if (!takePictures(picturePath, first, windowNote, error))
+        std::string buffer;
+        if (!waitForEditor(baseName(picturePath), kFirstDrawSeconds, -1, 0, "the opening values", limit, first, buffer,
+                           error) ||
+            !takePictures(picturePath, first, buffer, windowNote, error))
             ok = session.fail(error);
     }
 
@@ -2745,13 +2951,20 @@ static bool checkGui(Module& module, const std::string& bundle, const std::strin
         char what[100];
         std::snprintf(what, sizeof(what), "setParamNormalized(Wet, ID %u, %g) with the editor open",
                       static_cast<unsigned>(wetId), wet);
+        // The wait is for the new value: whatever the editor got before doesn't count.
+        gEditor.values.erase(static_cast<int64>(wetId));
         ok = session.step(what, session.controller->setParamNormalized(wetId, wet));
         Image second;
         std::string secondWindowNote;
         if (ok)
         {
-            guiRun(kUpdateSeconds);
-            if (!takePictures(wetPicturePath, second, secondWindowNote, error))
+            const double wetValue = session.controller->normalizedParamToPlain(wetId, wet);
+            char wetName[60];
+            std::snprintf(wetName, sizeof(wetName), "Wet = %g", wetValue);
+            std::string buffer;
+            if (!waitForEditor(baseName(wetPicturePath), kUpdateSeconds, static_cast<int64>(wetId), wetValue, wetName,
+                               limit, second, buffer, error) ||
+                !takePictures(wetPicturePath, second, buffer, secondWindowNote, error))
                 ok = session.fail(error);
         }
         if (ok)

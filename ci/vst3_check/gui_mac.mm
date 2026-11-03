@@ -119,6 +119,11 @@ void guiRun(double seconds)
     }
 }
 
+bool guiWindowVisible()
+{
+    return gWindow != nil && ([gWindow occlusionState] & NSWindowOcclusionStateVisible) != 0;
+}
+
 // Runs a tool to its end. The event loop keeps going meanwhile: waitUntilExit runs this thread's run loop.
 static bool runTool(NSString* tool, NSArray<NSString*>* arguments, std::string& error)
 {
