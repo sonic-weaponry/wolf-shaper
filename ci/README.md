@@ -105,6 +105,31 @@ Two facts about Wolf Shaper v1.0.2 that the renders have to respect:
   curve (up to -34 dBFS for a few samples with the nine-point test curve). It's the same for every build; renders are
   only comparable in the same call order. `vst3_check render` sets up processing first, then loads the state.
 
+## The macOS installer
+`packaging/macos/make_pkg.sh` builds the installer from the bundle the macOS job built and checked: one package that
+installs only `wolf-shaper.vst3` into /Library/Audio/Plug-Ins/VST3. It has the official v1.0.2 installer's package
+identifier (`studio.kx.distrho.plugins.wolf-shaper.vst3bundles`), so it replaces the official Wolf Shaper VST3 and its
+receipt, and leaves the official VST2, LV2 and CLAP alone. The bundle gets the GPL, the other licenses, the credits
+and the link to its exact source commit in `Contents/Resources`; the installer shows a welcome text and the GPL in its
+License pane. `component.plist` switches off bundle relocation and version checks, so it always installs into
+/Library/Audio/Plug-Ins/VST3 and replaces the bundle there. The CI build is unsigned.
+
+The bundle's `Info.plist`, `PkgInfo` and `Resources/empty.lproj` come from DPF's Makefile (DPF eba58491, a typo fix
+the DPF commit v1.0.2 was built with lacks). Hosts don't need them, but signing does; nothing in them identifies the
+plugin to a host (the class IDs come from the binary, and none of the files is a `moduleinfo.json`).
+
+`ci/check_pkg.sh` installs the package on the runner and removes it again: what the package holds (one component, no
+relocation, no scripts, `hostArchitectures` naming arm64 so Apple Silicon doesn't ask for Rosetta, exactly our built
+bundle plus the license files), a clean install, an install over the official v1.0.2 installer, and going back to the
+official one (report only). On every installed copy: the files exactly the package's, owned by root:wheel, our
+receipt, and `ci/run_checks.sh` on Apple Silicon and Intel. To uninstall by hand:
+```
+sudo rm -rf /Library/Audio/Plug-Ins/VST3/wolf-shaper.vst3
+sudo pkgutil --forget studio.kx.distrho.plugins.wolf-shaper.vst3bundles
+```
+Report only: `ci/probe_codesign.sh` signs throwaway copies ad hoc (no certificate) with and without the Info.plist and
+verifies them, and `ci/photo_installer.sh` photographs the installer's first two pages.
+
 ## The frozen files
 - `class-ids.txt`: the IDs measured on the official v1.0.2 releases, per platform.
 - `parameters.json` and `plugin-info.json`: generated from the official Windows v1.0.2 release on the Windows runner,

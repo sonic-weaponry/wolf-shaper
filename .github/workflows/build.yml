@@ -39,6 +39,8 @@ jobs:
       # pixels with a color channel more than 1/8 of full scale apart (ci/README.md). Measured: none differ at all (CI
       # run 40795830121). 0.01 % allows about 40 of the 404,482 pixels.
       GUI_MAX_DIFFERENT_SHARE: '0.0001'
+      # The macOS installer's package version (packaging/macos). The plugin itself keeps reporting 1.0.2.
+      PKG_VERSION: 1.0.2.1
     steps:
       - uses: actions/checkout@v4
         with:
@@ -94,6 +96,7 @@ jobs:
           cmake -E tar xf wolf-shaper-v1.0.2-macos-universal.zip
           hdiutil attach -nobrowse -readonly -mountpoint /tmp/wsdmg ./*.dmg
           pkgutil --expand-full /tmp/wsdmg/wolf-shaper-AudioPlugins.pkg pkg
+          cp /tmp/wsdmg/wolf-shaper-AudioPlugins.pkg .
           hdiutil detach /tmp/wsdmg
           cp -R "$(find pkg/dpf-wolf-shaper-vst3bundles.pkg -type d -name wolf-shaper.vst3 | head -n 1)" ./wolf-shaper.vst3
           echo "--- files in the bundle"
@@ -227,6 +230,36 @@ jobs:
             fi
           done
           exit $failed
+
+      # The macOS installer, unsigned (packaging/macos, ci/README.md): one package that installs our VST3 into
+      # /Library/Audio/Plug-Ins/VST3 with its licenses, credits and source link. It's installed on this runner (clean,
+      # and over the official v1.0.2 installer), checked there and uninstalled again.
+      - name: macOS installer, build (unsigned)
+        id: pkg
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: bash packaging/macos/make_pkg.sh bin/wolf-shaper.vst3 "$PKG_VERSION" dist-pkg/wolf-shaper-macos-unsigned.pkg
+
+      - name: macOS installer, install, check and uninstall
+        if: ${{ !cancelled() && steps.pkg.outcome == 'success' && steps.tool.outcome == 'success' && steps.official.outcome == 'success' }}
+        run: bash ci/check_pkg.sh ci/vst3_check/build/vst3_check dist-pkg/wolf-shaper-macos-unsigned.pkg "$PKG_VERSION" bin/wolf-shaper.vst3 official/wolf-shaper-AudioPlugins.pkg
+
+      # Report only: whether the bundle signs (ad hoc, no certificate) with and without its Info.plist.
+      - name: Code signing probe (ad hoc, report only)
+        if: ${{ !cancelled() && steps.pkg.outcome == 'success' && steps.tool.outcome == 'success' }}
+        run: bash ci/probe_codesign.sh ci/vst3_check/build/vst3_check dist-pkg/wolf-shaper-macos-unsigned.pkg
+
+      - name: macOS installer, photos of its first pages (report only)
+        if: ${{ !cancelled() && steps.pkg.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 2
+        run: bash ci/photo_installer.sh dist-pkg/wolf-shaper-macos-unsigned.pkg ci-results/pkg
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && steps.pkg.outcome == 'success' }}
+        with:
+          name: wolf-shaper-pkg-macos-unsigned
+          path: dist-pkg
+          retention-days: 7
 
       - name: Keep our block-512 renders for the comparison with Windows
         if: ${{ !cancelled() && steps.signal.outcome == 'success' }}
