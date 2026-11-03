@@ -1,0 +1,14 @@
+Wolf Shaper 1.0.2 for Mac (VST3)
+
+Wolf Shaper is a free, open-source waveshaper plugin by Patrick Desaulniers.
+
+This version fixes one Mac problem: projects and racks saved with Wolf Shaper on Windows now open on Mac with Wolf Shaper loaded, instead of showing it as missing. It sounds the same as the official Wolf Shaper 1.0.2.
+
+It installs the VST3 plugin into /Library/Audio/Plug-Ins/VST3 and replaces the Wolf Shaper VST3 already there. After installing, rescan your plugins in your DAW.
+
+Please note: Mac projects saved with the official Mac version of Wolf Shaper will show it as missing with this version.
+
+This version was built by Sonic Weaponry from Wolf Shaper's source code. Wolf Shaper's authors don't endorse Sonic Weaponry. Wolf Shaper is free software under the GNU General Public License, version 3, shown on the next page. The complete source code of this build:
+https://github.com/sonic-weaponry/wolf-shaper/tree/@COMMIT@
+
+The Sonic Weaponry Team

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!-- The installer's script, for productbuild. hostArchitectures must name arm64, or the Installer on Apple Silicon
+     asks for Rosetta first. make_pkg.sh fills in the package identifier and version. -->
+<installer-gui-script minSpecVersion="1">
+    <title>Wolf Shaper</title>
+    <welcome file="welcome.txt" mime-type="text/plain"/>
+    <license file="LICENSE.txt" mime-type="text/plain"/>
+    <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
+    <options customize="never" hostArchitectures="arm64,x86_64" require-scripts="false"/>
+    <choices-outline>
+        <line choice="vst3"/>
+    </choices-outline>
+    <choice id="vst3" title="Wolf Shaper VST3" visible="false">
+        <pkg-ref id="@IDENTIFIER@"/>
+    </choice>
+    <pkg-ref id="@IDENTIFIER@" version="@VERSION@" onConclusion="none">dpf-wolf-shaper-vst3bundles.pkg</pkg-ref>
+</installer-gui-script>

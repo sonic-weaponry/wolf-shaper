@@ -1,0 +1,60 @@
+WOLF SHAPER: CREDITS AND SOURCE CODE
+====================================
+
+Wolf Shaper is a free, open-source waveshaper plugin made by Patrick Desaulniers.
+https://github.com/wolf-plugins/wolf-shaper
+
+This is Wolf Shaper v1.0.2 for Mac (VST3, Apple Silicon and Intel), built by
+Sonic Weaponry from Wolf Shaper's source code. We changed it in October and
+November 2026 so that racks and projects saved on Windows work on Mac:
+- The Mac VST3 reports the same plugin ID as the Windows VST3, so projects
+  saved on Windows find it.
+- It's built so that it sounds the same as the official Windows version
+  (the oversampling filter, and the same arithmetic on Apple Silicon).
+- Saved settings load correctly when the host uses a comma for decimals
+  (a fix from DPF by Filipe Coelho).
+- The plugin carries an Info.plist (a fix from DPF by Filipe Coelho) and
+  these license files.
+Everything else is Wolf Shaper v1.0.2 as its author released it. Wolf
+Shaper's authors don't endorse Sonic Weaponry.
+
+
+YOUR RIGHTS
+-----------
+Wolf Shaper is free software under the GNU General Public License, version 3
+(GPL-3.0). You can use it, share it and change it under the terms of that
+license. It comes with no warranty. The full license is in
+"LICENSE (GPL-3.0).txt" in this folder.
+
+
+SOURCE CODE
+-----------
+The complete source code of this exact build is free to download:
+
+  https://github.com/sonic-weaponry/wolf-shaper/tree/@COMMIT@
+
+  with its dpf folder at
+  https://github.com/sonic-weaponry/DPF/tree/@DPF_COMMIT@
+
+The original Wolf Shaper v1.0.2:
+  https://github.com/wolf-plugins/wolf-shaper/releases/tag/v1.0.2
+
+If these links ever stop working, contact Sonic Weaponry and we'll send you a
+copy of the source code.
+
+
+BUILT WITH
+----------
+- DPF (DISTRHO Plugin Framework) by Filipe Coelho (falkTX), ISC license
+- pugl by David Robillard, ISC license
+- NanoVG by Mikko Mononen, zlib license (it includes fontstash by Mikko
+  Mononen, stb_truetype and stb_image by Sean Barrett, and a UTF-8 decoder by
+  Bjoern Hoehrmann)
+- DSPFilters by Vinnie Falco, MIT license
+- The Chivo font by Omnibus-Type, SIL Open Font License 1.1
+- The DejaVu Sans font (based on Bitstream Vera), DejaVu / Bitstream Vera license
+
+Their license texts are in the LICENSES folder.
+
+
+The Sonic Weaponry Team
