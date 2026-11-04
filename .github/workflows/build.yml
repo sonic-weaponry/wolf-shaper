@@ -287,12 +287,13 @@ jobs:
             "$d/application.p12:REHEARSAL_P12_PASSWORD" "$d/installer.p12:REHEARSAL_P12_PASSWORD"
           rm -rf "$d"
 
-      - name: Signing rehearsal, build the signed installer
+      # The plugin is signed with the throwaway identity; the installer itself stays unsigned here, because productbuild
+      # signs only with an installer certificate the Mac trusts (Apple's, in the macos-release job).
+      - name: Signing rehearsal, build the installer with the signed plugin
         id: rehearsal_pkg
         if: ${{ !cancelled() && steps.rehearsal_keychain.outcome == 'success' }}
         env:
           SIGN_APP_IDENTITY: ${{ steps.rehearsal_keychain.outputs.app_identity }}
-          SIGN_INSTALLER_IDENTITY: ${{ steps.rehearsal_keychain.outputs.installer_name }}
           SIGN_KEYCHAIN: ${{ steps.rehearsal_keychain.outputs.keychain }}
         run: bash packaging/macos/make_pkg.sh bin/wolf-shaper.vst3 "$PKG_VERSION" "$RUNNER_TEMP/rehearsal-pkg/wolf-shaper-macos-rehearsal.pkg"
 

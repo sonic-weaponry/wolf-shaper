@@ -149,10 +149,13 @@ signature starts must equal our build's. Its self-test runs on every push.
 
 Two ways it runs:
 - **Rehearsal, every push** (not on pull requests): `ci/make_test_identity.sh` makes two throwaway self-signed
-  identities that no Mac trusts, and they go through the same keychain, signing and install code as the real
-  certificates. `ci/check_signed_pkg.sh rehearsal` checks the signatures (seal, hardened runtime, identifier, both
-  slices, no entitlements), and `ci/check_pkg.sh` installs the package with `-allowUntrusted` and checks the installed
-  copy (`PKG_SIGNED=rehearsal`). Nothing from the rehearsal is uploaded.
+  identities that no Mac trusts, and they go through the same keychain and lookup code as the real certificates. The
+  plugin is signed with the throwaway one, with Apple's secure timestamp; the installer stays unsigned, because
+  productbuild signs only with an installer certificate the Mac trusts, and the rehearsal doesn't change the runner's
+  trust settings. `ci/check_signed_pkg.sh rehearsal` checks the plugin's signature (seal, hardened runtime,
+  identifier, both slices, no entitlements), and `ci/check_pkg.sh` installs the package and checks the installed copy
+  (`PKG_SIGNED=rehearsal`). Nothing from the rehearsal is uploaded. The installer's own signature is first made and
+  checked in the release job, before anything goes to Apple.
 - **Release, started by hand**: `gh workflow run build.yml --ref sw/mac-fix -f sign=true`. After every other job of
   the run has passed, the `macos-release` job signs the build the macos job checked (its sha256 must match) with the
   Developer ID certificates, checks the signatures, notarizes and staples, checks Apple's verdict (accepted with no

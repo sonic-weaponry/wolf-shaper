@@ -14,7 +14,8 @@
 # A signed package (PKG_SIGNED, ci/README.md "Signing"): the bundle in it is our build plus the license files plus
 # the seal (Contents/_CodeSignature/CodeResources), its program carries our build's code and data byte for byte
 # (ci/macho_same_code.py: only the signature differs), and on every installed copy the seal holds.
-#   PKG_SIGNED=rehearsal     signed with the throwaway identities; installed with -allowUntrusted
+#   PKG_SIGNED=rehearsal     the plugin signed with the throwaway identity; installed with -allowUntrusted (needed
+#                            only if the installer itself carries an untrusted signature)
 #   PKG_SIGNED=developer-id  signed with our Developer ID certificates: the installed copy must also meet Apple's
 #                            Developer ID requirement for $APPLE_TEAM_ID
 # PKG_RUN_NAME names the log folder (default: pkg) and prefixes the installed copies' check names.
@@ -150,7 +151,7 @@ echo "--- the package's signature (${signed:-unsigned dry run: none expected})"
 pkgutil --check-signature "$pkg" || true
 
 # --- Helpers for the install scenarios
-# The rehearsal's package is signed by a certificate no Mac trusts, so the installer needs -allowUntrusted for it.
+# A rehearsal package signed by a certificate no Mac trusts would need -allowUntrusted; an unsigned one doesn't mind it.
 install_pkg() {
     local code=0
     if [ "$signed" = rehearsal ]; then

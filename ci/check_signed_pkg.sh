@@ -2,10 +2,10 @@
 # Checks the signatures of a signed macOS installer and of the plugin inside it (ci/README.md, "Signing").
 #
 #   ci/check_signed_pkg.sh rehearsal <.pkg>
-#     After packaging/macos/make_pkg.sh with the throwaway identities (ci/make_test_identity.sh): the bundle's seal
+#     After packaging/macos/make_pkg.sh with the throwaway identity (ci/make_test_identity.sh): the bundle's seal
 #     holds in both slices, with the hardened runtime, no entitlements and the bundle's own identifier, signed by the
-#     throwaway identity; the package carries the throwaway signature. Gatekeeper rejects both, as it should for a
-#     certificate no Mac trusts; that's printed, not checked.
+#     throwaway identity. The package itself stays unsigned in the rehearsal (productbuild signs only with an installer
+#     certificate the Mac trusts); its signature status and Gatekeeper's verdict are printed, not checked.
 #   ci/check_signed_pkg.sh developer-id <.pkg> [<folder with Apple's notarization log>]
 #     The same with Apple's chain: the bundle signed by "Developer ID Application: $EXPECTED_SIGNER ($APPLE_TEAM_ID)",
 #     with a secure timestamp and meeting Apple's Developer ID requirement for our team, the package by "Developer ID
@@ -108,7 +108,7 @@ Developer ID Certification Authority
 Apple Root CA"
     check "package: trusted timestamp" has_text "Signed with a trusted timestamp" "$signature"
 else
-    check "package: signed by the throwaway installer identity" has_text "Wolf Shaper CI rehearsal Installer" "$signature"
+    echo "REPORT package (rehearsal, unsigned by design): $(grep -m 1 'Status:' <<<"$signature" | sed 's/^ *//')"
 fi
 
 # --- Notarization, staple, Gatekeeper
