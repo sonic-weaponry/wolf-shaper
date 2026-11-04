@@ -112,7 +112,9 @@ identifier (`studio.kx.distrho.plugins.wolf-shaper.vst3bundles`), so it replaces
 receipt, and leaves the official VST2, LV2 and CLAP alone. The bundle gets the GPL, the other licenses, the credits
 and the link to its exact source commit in `Contents/Resources`; the installer shows a welcome text and the GPL in its
 License pane. `component.plist` switches off bundle relocation and version checks, so it always installs into
-/Library/Audio/Plug-Ins/VST3 and replaces the bundle there. The CI build is unsigned.
+/Library/Audio/Plug-Ins/VST3 and replaces the bundle there. The License pane's copy of the GPL has each paragraph on
+one line (`unwrap_license.py`, which fails if a single word differs), so the pane wraps it cleanly; the copy in the
+bundle stays exactly as published. The installer built on every push is unsigned; see "Signing" below.
 
 The bundle's `Info.plist`, `PkgInfo` and `Resources/empty.lproj` come from DPF's Makefile (DPF eba58491, a typo fix
 the DPF commit v1.0.2 was built with lacks). Hosts don't need them, but signing does; nothing in them identifies the
@@ -122,13 +124,54 @@ plugin to a host (the class IDs come from the binary, and none of the files is a
 relocation, no scripts, `hostArchitectures` naming arm64 so Apple Silicon doesn't ask for Rosetta, exactly our built
 bundle plus the license files), a clean install, an install over the official v1.0.2 installer, and going back to the
 official one (report only). On every installed copy: the files exactly the package's, owned by root:wheel, our
-receipt, and `ci/run_checks.sh` on Apple Silicon and Intel. To uninstall by hand:
+receipt, and `ci/run_checks.sh` on Apple Silicon and Intel. At the end it removes everything it installed, the official
+VST2, LV2 and CLAP included. To uninstall by hand:
 ```
 sudo rm -rf /Library/Audio/Plug-Ins/VST3/wolf-shaper.vst3
 sudo pkgutil --forget studio.kx.distrho.plugins.wolf-shaper.vst3bundles
 ```
-Report only: `ci/probe_codesign.sh` signs throwaway copies ad hoc (no certificate) with and without the Info.plist and
-verifies them, and `ci/photo_installer.sh` photographs the installer's first two pages.
+Report only: `ci/photo_installer.sh` photographs the installer's first two pages.
+
+## Signing
+The installer customers get is signed, notarized and stapled:
+- `packaging/macos/make_pkg.sh` signs the bundle with a Developer ID Application identity (hardened runtime, secure
+  timestamp, no entitlements) after the license files are in, so the seal covers them, and the installer with a
+  Developer ID Installer identity (`SIGN_APP_IDENTITY`, `SIGN_INSTALLER_IDENTITY`, `SIGN_KEYCHAIN`).
+- `packaging/macos/notarize.sh` sends the installer to Apple's notary service with an App Store Connect API key, waits
+  up to 60 minutes, saves Apple's log and staples the ticket to the installer.
+- `ci/keychain.sh` holds the identities in a temporary keychain with a random password, with Apple's Developer ID G2
+  intermediate certificate (checked against Apple's root on the runner), and deletes it afterwards.
+
+Signing changes nothing in the program but its signature: codesign replaces the linker's ad hoc signature at the end of
+each slice, or adds one where the linker left none (the x86_64 slice). `ci/macho_same_code.py` proves it for every
+signed copy: per slice, the header, every load command but the signature's, and every segment's bytes up to where the
+signature starts must equal our build's. Its self-test runs on every push.
+
+Two ways it runs:
+- **Rehearsal, every push** (not on pull requests): `ci/make_test_identity.sh` makes two throwaway self-signed
+  identities that no Mac trusts, and they go through the same keychain, signing and install code as the real
+  certificates. `ci/check_signed_pkg.sh rehearsal` checks the signatures (seal, hardened runtime, identifier, both
+  slices, no entitlements), and `ci/check_pkg.sh` installs the package with `-allowUntrusted` and checks the installed
+  copy (`PKG_SIGNED=rehearsal`). Nothing from the rehearsal is uploaded.
+- **Release, started by hand**: `gh workflow run build.yml --ref sw/mac-fix -f sign=true`. After every other job of
+  the run has passed, the `macos-release` job signs the build the macos job checked (its sha256 must match) with the
+  Developer ID certificates, checks the signatures, notarizes and staples, checks Apple's verdict (accepted with no
+  issues, for exactly this file, the ticket covering both slices of the plugin), the staple and Gatekeeper ("Notarized
+  Developer ID"), then installs the stapled package clean and over the official installer and checks the installed
+  copy (`PKG_SIGNED=developer-id`: also Apple's Developer ID requirement for our team). The installer and Apple's log
+  are uploaded as `wolf-shaper-pkg-macos-notarized`. A run whose notarization didn't finish uploads its installer as
+  `wolf-shaper-pkg-macos-signed-NOT-notarized`, for diagnosis only.
+
+A new or changed Apple team's first notarizations can stay "In Progress" for days. `notary-status.yml` lists the team's
+submissions without sending anything (`gh workflow run notary-status.yml --ref sw/mac-fix`); once Apple has accepted
+one, a new signing run goes through in minutes.
+
+The secrets live in the `mac-release` environment, which only `sw/*` branches and `v*` tags can use:
+`MACOS_CERT_APPLICATION_P12` and `MACOS_CERT_INSTALLER_P12` (base64 of the .p12 files), their passwords
+`MACOS_CERT_APPLICATION_PASSWORD` and `MACOS_CERT_INSTALLER_PASSWORD`, `APPLE_API_KEY_P8`, `APPLE_API_KEY_ID`,
+`APPLE_API_ISSUER_ID` and `APPLE_TEAM_ID`. They reach only the steps that need them, nothing prints them, the .p12 and
+key files are written with owner-only access and deleted, and the keychain is deleted at the end of the job, also
+after a failure. The certificates must be in the name of `EXPECTED_SIGNER` and our Team ID, or the job stops.
 
 ## The frozen files
 - `class-ids.txt`: the IDs measured on the official v1.0.2 releases, per platform.

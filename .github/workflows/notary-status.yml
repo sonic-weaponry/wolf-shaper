@@ -1,0 +1,43 @@
+# Lists Apple's notarization submissions for our team, to keep an eye on one that is taking long (a new or changed
+# team's first submissions can stay "In Progress" for days). Start it by hand on an sw/ branch:
+#   gh workflow run notary-status.yml --ref sw/mac-fix
+# It only reads; it signs and sends nothing. See ci/README.md, "Signing".
+name: notary-status
+
+on:
+  workflow_dispatch:
+  # Only so that GitHub knows this workflow and lets it be started by hand from a branch other than the default one:
+  # a push that changes this file creates a run whose job is skipped.
+  push:
+    branches: ['sw/**']
+    paths: ['.github/workflows/notary-status.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  notary-status:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'sonic-weaponry/wolf-shaper' && startsWith(github.ref, 'refs/heads/sw/') }}
+    runs-on: macos-latest
+    environment: mac-release
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Apple's notarization submissions for our team
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          if [ -z "$APPLE_API_KEY_P8" ] || [ -z "$APPLE_API_KEY_ID" ] || [ -z "$APPLE_API_ISSUER_ID" ]; then
+            echo "::error::The mac-release environment has no notarization key yet (WAITING_ON_ME W3 and W4)."
+            exit 1
+          fi
+          umask 077
+          mkdir -p "$RUNNER_TEMP/notary"
+          key="$RUNNER_TEMP/notary/AuthKey.p8"
+          trap 'rm -rf "$RUNNER_TEMP/notary"' EXIT
+          printf '%s\n' "$APPLE_API_KEY_P8" >"$key"
+          xcrun notarytool history --key "$key" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID"
