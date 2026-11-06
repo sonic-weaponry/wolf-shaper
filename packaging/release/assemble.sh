@@ -27,7 +27,7 @@ mkdir -p "$assets"
 cp "$pkg" "$assets/wolf-shaper-$tag-macos-universal.pkg"
 cp "$zip" "$assets/wolf-shaper-$tag-macos-universal-vst3.zip"
 cp "$source" "$assets/wolf-shaper-$tag-source.tar.gz"
-cp LICENSE "$assets/LICENSE-GPL-3.0.txt"
+git show HEAD:LICENSE >"$assets/LICENSE-GPL-3.0.txt"
 if command -v sha256sum >/dev/null; then
     sum() { sha256sum "$@"; }
 else

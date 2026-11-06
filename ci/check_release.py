@@ -75,7 +75,7 @@ def problems(folder, tag, rehearsal, tarball=True):
     result(sorted(listed) == sorted(files) and len(lines) == len(files), "SHA256SUMS lists exactly the other four files")
 
     lic = os.path.join(assets, "LICENSE-GPL-3.0.txt")
-    repo_license = open("LICENSE", "rb").read()
+    repo_license = subprocess.run(["git", "show", "HEAD:LICENSE"], check=True, capture_output=True).stdout
     result(os.path.isfile(lic) and open(lic, "rb").read() == repo_license and
            b"Version 3, 29 June 2007" in repo_license[:200], "LICENSE-GPL-3.0.txt is Wolf Shaper's LICENSE (GPL-3.0)")
 
