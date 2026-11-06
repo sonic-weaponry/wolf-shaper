@@ -1,0 +1,38 @@
+WOLF SHAPER @RELEASE_TAG@: THE COMPLETE SOURCE CODE
+====================================================
+
+This is the complete source code of Wolf Shaper @RELEASE_TAG@ for Mac, a
+modified version of Wolf Shaper v1.0.2 by Patrick Desaulniers
+(https://github.com/wolf-plugins/wolf-shaper). Sonic Weaponry changed it in
+October and November 2026 so that racks and projects saved with Wolf
+Shaper's VST3 on Windows open on Mac. The release notes say what changed:
+https://github.com/sonic-weaponry/wolf-shaper/releases/tag/@RELEASE_TAG@
+
+This folder holds exactly these three commits, every file as committed:
+  .                           @COMMIT@
+                              https://github.com/sonic-weaponry/wolf-shaper
+  dpf                         @DPF_COMMIT@
+                              https://github.com/sonic-weaponry/DPF
+  dpf/dgl/src/pugl-upstream   @PUGL_COMMIT@
+                              https://github.com/DISTRHO/pugl (unchanged)
+
+Wolf Shaper is free software under the GNU General Public License, version 3
+(LICENSE). DPF and pugl are under the ISC license (dpf/LICENSE,
+dpf/dgl/src/pugl-upstream/COPYING); the other parts and their licenses are
+listed in packaging/macos/CREDITS.txt.in.
+
+How we build it: .github/workflows/build.yml (the job "macos" builds the Mac
+VST3); packaging/macos/make_pkg.sh builds the installer.
+
+Wolf Shaper's authors don't endorse Sonic Weaponry.
+
+The Sonic Weaponry Team
+
+
+OUR CHANGES, WITH DATES
+-----------------------
+wolf-shaper, since v1.0.2:
+@WOLF_SHAPER_LOG@
+
+dpf, since a4c83bfd (the DPF the official Windows v1.0.2 was built with):
+@DPF_LOG@
