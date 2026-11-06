@@ -2,7 +2,9 @@
 # ci/ on our build and on the official v1.0.2 release side by side: class IDs, parameters, states, opening the plugin
 # the way a host does, on macOS its editor window, and on macOS and Windows the sound. The macOS installer is built,
 # rehearsed with throwaway signing identities and installed on the runner; started by hand with sign=true, the
-# macos-release job also signs, notarizes and staples it. See ci/README.md.
+# macos-release job also signs, notarizes and staples it. The release (the installer, the plugin zip, the complete
+# source, the license, SHA256SUMS and the notes) is put together and checked on every run, from unsigned stand-ins;
+# started by hand with release=draft, it's signed and parked as a draft release. See ci/README.md.
 name: build
 
 on:
@@ -15,13 +17,18 @@ on:
         description: Sign, notarize and staple the macOS installer (the macos-release job, mac-release environment)
         type: boolean
         default: false
+      release:
+        description: 'A draft release: rehearsal-draft (unsigned stand-ins, under a throwaway name) or draft (signs and notarizes, then RELEASE_TAG)'
+        type: choice
+        options: [none, rehearsal-draft, draft]
+        default: none
 
 permissions:
   contents: read
 
 concurrency:
-  # A signing run has its own group, so a push doesn't cancel it while Apple checks the installer.
-  group: build-${{ github.ref }}-${{ inputs.sign && 'sign' || 'checks' }}
+  # Signing and release runs have their own groups, so a push doesn't cancel them while Apple checks the installer.
+  group: build-${{ github.ref }}-${{ (inputs.sign || inputs.release == 'draft') && 'sign' || inputs.release == 'rehearsal-draft' && 'rehearsal' || 'checks' }}
   cancel-in-progress: true
 
 env:
@@ -31,6 +38,8 @@ env:
   OFFICIAL_RELEASE: v1.0.2
   # The macOS installer's package version (packaging/macos). The plugin itself keeps reporting 1.0.2.
   PKG_VERSION: 1.0.2.1
+  # The release this branch builds (packaging/release): its tag and file names. Its last number is PKG_VERSION's.
+  RELEASE_TAG: v1.0.2-sw.1
   # sha256 of the official v1.0.2 binaries the checks load. The Windows one is also the reference install's.
   OFFICIAL_WINDOWS_SHA256: 35ad3db823fba86dfd1f35b827f1285496ce306695de483c54ac447ce6e2d699
   OFFICIAL_MAC_SHA256: a0698fcfdf6f99a3a611d686ca72f3d81f5f4b0ec903d46cfac135654c12a95a
@@ -46,6 +55,8 @@ jobs:
     outputs:
       # The macos-release job signs exactly the program this job built and checked.
       binary_sha256: ${{ steps.slices.outputs.binary_sha256 }}
+      # The source tarball's tar (uncompressed), which must come out the same as the linux job's.
+      source_tar_sha256: ${{ steps.source.outputs.tar_sha256 }}
     env:
       GH_TOKEN: ${{ github.token }}
       # How much of the editor's picture may differ from the official v1.0.2's picture of the same state: the share of
@@ -53,9 +64,11 @@ jobs:
       # run 40795830121). 0.01 % allows about 40 of the 404,482 pixels.
       GUI_MAX_DIFFERENT_SHARE: '0.0001'
     steps:
+      # Full history: the source tarball's notice lists our commits since v1.0.2 (packaging/release).
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 0
 
       - name: Runner and toolchain
         run: |
@@ -314,6 +327,57 @@ jobs:
           bash ci/keychain.sh delete "$RUNNER_TEMP/rehearsal.keychain-db"
           rm -rf "$RUNNER_TEMP/rehearsal-identities" "$RUNNER_TEMP/rehearsal-pkg"
 
+      # The complete source as one file (packaging/release/make_source_tarball.py, ci/README.md "The release"): exactly
+      # this commit, dpf and pugl, every file checked against git. Unpacked into a folder without git and built there
+      # with the same flags as "Build the VST3 (universal)" above, the plugin must come out byte for byte the same.
+      - name: Source tarball, and the plugin built from it
+        id: source
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          CFLAGS: -arch x86_64 -arch arm64 -DMAC_OS_X_VERSION_MAX_ALLOWED=MAC_OS_X_VERSION_10_12 -DMAC_OS_X_VERSION_MIN_REQUIRED=MAC_OS_X_VERSION_10_12 -mmacosx-version-min=10.12 -mtune=generic -msse -msse2
+          CXXFLAGS: -arch x86_64 -arch arm64 -DMAC_OS_X_VERSION_MAX_ALLOWED=MAC_OS_X_VERSION_10_12 -DMAC_OS_X_VERSION_MIN_REQUIRED=MAC_OS_X_VERSION_10_12 -mmacosx-version-min=10.12 -mtune=generic -msse -msse2
+          LDFLAGS: -arch x86_64 -arch arm64 -mmacosx-version-min=10.12
+        run: |
+          src="$RUNNER_TEMP/source/wolf-shaper-$RELEASE_TAG-source.tar.gz"
+          python3 packaging/release/make_source_tarball.py make "$RELEASE_TAG" "$src"
+          out=$(python3 packaging/release/make_source_tarball.py check "$RELEASE_TAG" "$src") || { echo "$out"; exit 1; }
+          echo "$out"
+          echo "tar_sha256=$(sed -n 's/^TAR_SHA256=//p' <<<"$out")" >> "$GITHUB_OUTPUT"
+          d="$RUNNER_TEMP/from-source"
+          mkdir -p "$d"
+          tar -xzf "$src" -C "$d"
+          cd "$d/wolf-shaper-$RELEASE_TAG"
+          if [ -e .git ] || [ -e dpf/.git ] || [ ! -L dpf/dgl/src/pugl.mm ]; then
+            echo "::error::the unpacked source has a .git, or pugl.mm isn't a symlink"
+            exit 1
+          fi
+          make $VST3_ONLY features
+          make $VST3_ONLY NOOPT=true -j"$(sysctl -n hw.logicalcpu)" plugins > "$RUNNER_TEMP/from-source-build.log" 2>&1 || { tail -n 40 "$RUNNER_TEMP/from-source-build.log"; exit 1; }
+          cd "$GITHUB_WORKSPACE"
+          if diff -r bin/wolf-shaper.vst3 "$d/wolf-shaper-$RELEASE_TAG/bin/wolf-shaper.vst3"; then
+            echo "PASS built from the source tarball (no git), the plugin bundle is byte for byte this job's build"
+          else
+            echo "::error::FAIL the plugin built from the source tarball differs from this job's build"
+            exit 1
+          fi
+
+      # The release's installer and plugin zip, as unsigned stand-ins (ci/README.md, "The release"): built like the
+      # signed ones (PKG_RELEASE_TAG: the credits point at the release page) for the release-folder job to put together
+      # and check. Never handed out: the release itself takes the signed files from the macos-release job.
+      - name: Release stand-ins, the installer and the plugin zip (unsigned)
+        id: standins
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          PKG_RELEASE_TAG="$RELEASE_TAG" bash packaging/macos/make_pkg.sh bin/wolf-shaper.vst3 "$PKG_VERSION" release-standins/standin-unsigned.pkg > "$RUNNER_TEMP/standin-pkg.log" 2>&1 || { cat "$RUNNER_TEMP/standin-pkg.log"; exit 1; }
+          bash packaging/macos/make_zip.sh release-standins/standin-unsigned.pkg "$RELEASE_TAG" release-standins/standin-unsigned-vst3.zip
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && steps.standins.outcome == 'success' }}
+        with:
+          name: release-standins-macos
+          path: release-standins
+          retention-days: 7
+
       - name: macOS installer, photos of its first pages (report only)
         if: ${{ !cancelled() && steps.pkg.outcome == 'success' }}
         continue-on-error: true
@@ -370,12 +434,17 @@ jobs:
     defaults:
       run:
         shell: bash
+    outputs:
+      # The source tarball's tar (uncompressed), which must come out the same as the macos job's.
+      source_tar_sha256: ${{ steps.source.outputs.tar_sha256 }}
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
+      # Full history: the source tarball's notice lists our commits since v1.0.2 (packaging/release).
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 0
 
       - name: Build dependencies
         run: |
@@ -441,6 +510,59 @@ jobs:
       - name: Self-test (each check must fail on wrong frozen values)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.tool.outcome == 'success' }}
         run: bash ci/self_test.sh ci/vst3_check/build/vst3_check bin/wolf-shaper.vst3
+
+      # The complete source as one file, the one the release carries (packaging/release/make_source_tarball.py,
+      # ci/README.md "The release"): made twice (it must come out identical), checked file by file against git, and the
+      # check's self-test (broken copies must fail).
+      - name: Source tarball
+        id: source
+        if: ${{ !cancelled() }}
+        run: |
+          src="dist-source/wolf-shaper-$RELEASE_TAG-source.tar.gz"
+          python3 packaging/release/make_source_tarball.py make "$RELEASE_TAG" "$src"
+          python3 packaging/release/make_source_tarball.py make "$RELEASE_TAG" "$RUNNER_TEMP/again.tar.gz"
+          if cmp "$src" "$RUNNER_TEMP/again.tar.gz"; then
+            echo "PASS made twice, byte for byte the same"
+          else
+            echo "::error::FAIL the source tarball came out different the second time"
+            exit 1
+          fi
+          out=$(python3 packaging/release/make_source_tarball.py check "$RELEASE_TAG" "$src") || { echo "$out"; exit 1; }
+          echo "$out"
+          echo "tar_sha256=$(sed -n 's/^TAR_SHA256=//p' <<<"$out")" >> "$GITHUB_OUTPUT"
+          python3 packaging/release/make_source_tarball.py self-test "$RELEASE_TAG" "$src"
+
+      # Unpacked into a folder without git and built there with the same flags as "Build the VST3" above, the plugin
+      # must come out byte for byte the same.
+      - name: The VST3 built from the source tarball
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.source.outcome == 'success' }}
+        env:
+          LDFLAGS: -static-libgcc -static-libstdc++
+        run: |
+          d="$RUNNER_TEMP/from-source"
+          mkdir -p "$d"
+          tar -xzf "dist-source/wolf-shaper-$RELEASE_TAG-source.tar.gz" -C "$d"
+          cd "$d/wolf-shaper-$RELEASE_TAG"
+          if [ -e .git ] || [ -e dpf/.git ] || [ ! -L dpf/dgl/src/pugl.mm ]; then
+            echo "::error::the unpacked source has a .git, or pugl.mm isn't a symlink"
+            exit 1
+          fi
+          make $VST3_ONLY features
+          make $VST3_ONLY -j"$(nproc)" plugins > "$RUNNER_TEMP/from-source-build.log" 2>&1 || { tail -n 40 "$RUNNER_TEMP/from-source-build.log"; exit 1; }
+          cd "$GITHUB_WORKSPACE"
+          if diff -r bin/wolf-shaper.vst3 "$d/wolf-shaper-$RELEASE_TAG/bin/wolf-shaper.vst3"; then
+            echo "PASS built from the source tarball (no git), the plugin bundle is byte for byte this job's build"
+          else
+            echo "::error::FAIL the plugin built from the source tarball differs from this job's build"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && steps.source.outcome == 'success' }}
+        with:
+          name: wolf-shaper-source
+          path: dist-source
+          retention-days: 7
 
       - name: Pack our build with its licenses and source link
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
@@ -702,15 +824,15 @@ jobs:
           done
           python3 ci/null_test.py --limit -100 --label "our macOS build (arm64) against our Windows build" --dirs renders/windows-x64-ours renders/macos-arm64-ours
 
-  # The signed, notarized and stapled macOS installer (ci/README.md, "Signing"). Only when the workflow is started by
-  # hand with sign=true on an sw/ branch, and only after every other job of the run passed. It signs the build the macos
-  # job checked. The mac-release environment, which holds the Developer ID certificates and the notarization key,
-  # accepts only sw/* branches and v* tags. Nothing here prints a secret, and the keychain and the key file are deleted
-  # at the end, also after a failure.
+  # The signed, notarized and stapled macOS installer and plugin zip (ci/README.md, "Signing"). Only when the workflow
+  # is started by hand with sign=true or release=draft on an sw/ branch, and only after every other job of the run
+  # passed. It signs the build the macos job checked. The mac-release environment, which holds the Developer ID
+  # certificates and the notarization key, accepts only sw/* branches and v* tags. Nothing here prints a secret, and the
+  # keychain and the key file are deleted at the end, also after a failure.
   macos-release:
     needs: [macos, linux, windows, macos-private, sound-compare]
     if: >-
-      ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.sign &&
+      ${{ !cancelled() && github.event_name == 'workflow_dispatch' && (inputs.sign || inputs.release == 'draft') &&
       github.repository == 'sonic-weaponry/wolf-shaper' && startsWith(github.ref, 'refs/heads/sw/') &&
       needs.macos.result == 'success' && needs.linux.result == 'success' && needs.windows.result == 'success' &&
       needs.macos-private.result == 'success' && needs.sound-compare.result == 'success' }}
@@ -784,12 +906,14 @@ jobs:
             "$d/application.p12:MACOS_CERT_APPLICATION_PASSWORD" "$d/installer.p12:MACOS_CERT_INSTALLER_PASSWORD"
           rm -f "$d/application.p12" "$d/installer.p12"
 
+      # A release (release=draft): the credits in the bundle also point at the release page (make_pkg.sh).
       - name: Build the signed installer
         id: pkg
         env:
           SIGN_APP_IDENTITY: ${{ steps.keychain.outputs.app_identity }}
           SIGN_INSTALLER_IDENTITY: ${{ steps.keychain.outputs.installer_name }}
           SIGN_KEYCHAIN: ${{ steps.keychain.outputs.keychain }}
+          PKG_RELEASE_TAG: ${{ inputs.release == 'draft' && env.RELEASE_TAG || '' }}
         run: bash packaging/macos/make_pkg.sh ours/wolf-shaper.vst3 "$PKG_VERSION" "$PKG"
 
       - name: Signatures (before notarization)
@@ -826,26 +950,26 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           PKG_SIGNED: developer-id
           PKG_RUN_NAME: pkg-release
+          PKG_RELEASE_TAG: ${{ inputs.release == 'draft' && env.RELEASE_TAG || '' }}
         run: bash ci/check_pkg.sh ci/vst3_check/build/vst3_check "$PKG" "$PKG_VERSION" ours/wolf-shaper.vst3 official/wolf-shaper-AudioPlugins.pkg
 
-      # Report only, for a zip download of the plugin in R8: Apple's ticket also covers the plugin itself.
-      - name: Staple a copy of the plugin itself (report only)
+      # The plugin zip for the release page (packaging/macos/make_zip.sh): the signed bundle from the stapled installer,
+      # with Apple's ticket stapled to the bundle too if Apple's stapler takes a plugin bundle (report only: notarizing
+      # the installer covers the plugin inside it, and Gatekeeper finds the ticket online otherwise).
+      - name: The plugin zip (signed, stapled if Apple's stapler can)
+        id: zip
         if: ${{ !cancelled() && steps.notarize.outcome == 'success' }}
-        continue-on-error: true
-        run: |
-          d=$(mktemp -d)
-          pkgutil --expand-full "$PKG" "$d/expanded"
-          ditto "$d/expanded/dpf-wolf-shaper-vst3bundles.pkg/Payload/wolf-shaper.vst3" "$d/wolf-shaper.vst3"
-          code=0
-          xcrun stapler staple -v "$d/wolf-shaper.vst3" && xcrun stapler validate -v "$d/wolf-shaper.vst3" || code=$?
-          echo "REPORT stapling the plugin bundle itself: exit $code"
-          rm -rf "$d"
+        env:
+          ZIP_STAPLE: 'yes'
+        run: bash packaging/macos/make_zip.sh "$PKG" "$RELEASE_TAG" dist-release/wolf-shaper-macos-signed-vst3.zip
 
-      - name: SHA-256 of the installer
+      - name: SHA-256 of the installer and the zip
         if: ${{ !cancelled() && steps.pkg.outcome == 'success' }}
         run: |
           cd dist-release
-          shasum -a 256 ./*.pkg | tee SHA256SUMS.txt
+          files=(./*.pkg)
+          if [ -f ./wolf-shaper-macos-signed-vst3.zip ]; then files+=(./wolf-shaper-macos-signed-vst3.zip); fi
+          shasum -a 256 "${files[@]}" | tee SHA256SUMS.txt
 
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() && steps.notarize.outcome == 'success' }}
@@ -875,3 +999,142 @@ jobs:
         run: |
           bash ci/keychain.sh delete "$RUNNER_TEMP/signing.keychain-db"
           rm -rf "$RUNNER_TEMP/signing" "$RUNNER_TEMP/notary"
+
+  # The release (ci/README.md, "The release"), put together and checked on every run: the installer, the plugin zip,
+  # the complete source, the license and SHA256SUMS, with the notes and the title. From the macos job's unsigned
+  # stand-ins, except when started by hand with release=draft: then from the macos-release job's signed and notarized
+  # files. Uploaded as an artifact; only the release-draft job puts anything on the release page.
+  release-folder:
+    needs: [macos, linux, macos-release]
+    if: >-
+      ${{ !cancelled() && needs.macos.result == 'success' && needs.linux.result == 'success' &&
+      (inputs.release != 'draft' || needs.macos-release.result == 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    env:
+      REHEARSAL: ${{ inputs.release != 'draft' && 'yes' || 'no' }}
+    steps:
+      # Full history and the submodules: the checks compare the source tarball with git.
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Release tag and installer version agree
+        run: |
+          echo "release $RELEASE_TAG, installer version $PKG_VERSION, rehearsal (unsigned stand-ins): $REHEARSAL"
+          if [ "${RELEASE_TAG##*-sw.}" != "${PKG_VERSION##*.}" ]; then
+            echo "::error::RELEASE_TAG and PKG_VERSION don't end in the same number"
+            exit 1
+          fi
+
+      - name: The source tarball comes out the same on macOS and Linux
+        env:
+          MACOS_TAR: ${{ needs.macos.outputs.source_tar_sha256 }}
+          LINUX_TAR: ${{ needs.linux.outputs.source_tar_sha256 }}
+        run: |
+          echo "tar sha256: macOS $MACOS_TAR, Linux $LINUX_TAR"
+          if [ -z "$MACOS_TAR" ] || [ "$MACOS_TAR" != "$LINUX_TAR" ]; then
+            echo "::error::FAIL the source tarball's tar differs between macOS and Linux"
+            exit 1
+          fi
+          echo "PASS the same tar on macOS and Linux"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wolf-shaper-source
+          path: source
+
+      - uses: actions/download-artifact@v4
+        if: ${{ env.REHEARSAL == 'yes' }}
+        with:
+          name: release-standins-macos
+          path: in
+
+      - uses: actions/download-artifact@v4
+        if: ${{ env.REHEARSAL == 'no' }}
+        with:
+          name: wolf-shaper-pkg-macos-notarized
+          path: in
+
+      - name: Put the release together
+        run: |
+          if [ "$REHEARSAL" = yes ]; then
+            export RELEASE_REHEARSAL=yes
+            bash packaging/release/assemble.sh "$RELEASE_TAG" in/standin-unsigned.pkg in/standin-unsigned-vst3.zip "source/wolf-shaper-$RELEASE_TAG-source.tar.gz" release
+          else
+            bash packaging/release/assemble.sh "$RELEASE_TAG" in/wolf-shaper-macos-signed.pkg in/wolf-shaper-macos-signed-vst3.zip "source/wolf-shaper-$RELEASE_TAG-source.tar.gz" release
+          fi
+
+      - name: Check the release, and the check's self-test
+        run: |
+          flag=
+          if [ "$REHEARSAL" = yes ]; then flag=--rehearsal; fi
+          python3 ci/check_release.py $flag release "$RELEASE_TAG"
+          python3 ci/check_release.py --self-test $flag release "$RELEASE_TAG"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-folder
+          path: release
+          retention-days: 7
+
+  # A draft release on our fork's release page, only when started by hand on an sw/ branch with release=rehearsal-draft
+  # (the unsigned stand-ins under a throwaway name, deleted after a look) or release=draft (the signed release under
+  # RELEASE_TAG), and only after every job of the run passed. A draft is visible only to people with write access; the
+  # tag appears when it's published, which is a separate step after Isaac's OK (ci/README.md, "The release"). The only
+  # job whose token may write to the repository (contents: write, for the release page).
+  release-draft:
+    needs: [release-folder, macos, linux, windows, macos-private, sound-compare]
+    if: >-
+      ${{ !cancelled() && github.event_name == 'workflow_dispatch' &&
+      (inputs.release == 'rehearsal-draft' || inputs.release == 'draft') &&
+      github.repository == 'sonic-weaponry/wolf-shaper' && startsWith(github.ref, 'refs/heads/sw/') &&
+      needs.release-folder.result == 'success' && needs.macos.result == 'success' && needs.linux.result == 'success' &&
+      needs.windows.result == 'success' && needs.macos-private.result == 'success' &&
+      needs.sound-compare.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-folder
+          path: release
+
+      - name: Nothing under this name yet
+        env:
+          RELEASE: ${{ inputs.release }}
+        run: |
+          if [ "$RELEASE" = draft ]; then TAG=$RELEASE_TAG; else TAG=rehearsal-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT; fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "draft release name: $TAG, commit $GITHUB_SHA"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::the tag $TAG exists already"
+            exit 1
+          fi
+          if [ -n "$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq ".[] | select(.tag_name == \"$TAG\") | .id")" ]; then
+            echo "::error::a release named $TAG exists already"
+            exit 1
+          fi
+
+      - name: Create the draft release
+        run: |
+          gh release create "$TAG" release/assets/* --repo "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" \
+            --title "$(cat release/release-title.txt)" --notes-file release/release-notes.md
+
+      - name: Check the draft on GitHub
+        run: python3 ci/check_release_draft.py release "$TAG" "$GITHUB_SHA" "$GITHUB_REPOSITORY"

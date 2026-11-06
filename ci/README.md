@@ -161,8 +161,9 @@ Two ways it runs:
   Developer ID certificates, checks the signatures, notarizes and staples, checks Apple's verdict (accepted with no
   issues, for exactly this file, the ticket covering both slices of the plugin), the staple and Gatekeeper ("Notarized
   Developer ID"), then installs the stapled package clean and over the official installer and checks the installed
-  copy (`PKG_SIGNED=developer-id`: also Apple's Developer ID requirement for our team). The installer and Apple's log
-  are uploaded as `wolf-shaper-pkg-macos-notarized`. A run whose notarization didn't finish uploads its installer as
+  copy (`PKG_SIGNED=developer-id`: also Apple's Developer ID requirement for our team), and zips the signed plugin for
+  the release page (`packaging/macos/make_zip.sh`, see "The release"). The installer, the zip and Apple's log are
+  uploaded as `wolf-shaper-pkg-macos-notarized`. A run whose notarization didn't finish uploads its installer as
   `wolf-shaper-pkg-macos-signed-NOT-notarized`, for diagnosis only.
 
 A new or changed Apple team's first notarizations can stay "In Progress" for days. `notary-status.yml` lists the team's
@@ -175,6 +176,50 @@ The secrets live in the `mac-release` environment, which only `sw/*` branches an
 `APPLE_API_ISSUER_ID` and `APPLE_TEAM_ID`. They reach only the steps that need them, nothing prints them, the .p12 and
 key files are written with owner-only access and deleted, and the keychain is deleted at the end of the job, also
 after a failure. The certificates must be in the name of `EXPECTED_SIGNER` and our Team ID, or the job stops.
+
+## The release
+A release on our fork's release page carries five files: the signed installer, the signed plugin as a zip, the
+complete source, the license (GPL-3.0) and SHA256SUMS, with notes that credit Wolf Shaper's and DPF's authors and say
+exactly what changed. The GPL asks that whoever hands out the plugin also hands out its complete source, so the source
+goes on the same page as the plugin. `RELEASE_TAG` in build.yml names the release (its last number is `PKG_VERSION`'s).
+
+- **The source** (`packaging/release/make_source_tarball.py`): GitHub's own "Source code" downloads leave out the dpf
+  folder (a submodule), and the pugl commit inside dpf is reachable only from a side branch of DISTRHO/pugl, so the
+  release carries its own: this commit, dpf and pugl as one .tar.gz, every file read from git's objects (not the
+  working tree, and not `git archive`, which applies the machine's line-ending settings), the symlink
+  `dpf/dgl/src/pugl.mm` kept, plus `ABOUT THIS SOURCE CODE.txt` at the top (who changed it and when, the three
+  commits, our commits since v1.0.2 and since DPF a4c83bfd). Sorted, with fixed times and owners, so the same commits
+  give the same file. `check` recomputes every file's git ID from the tarball and compares it with the three commits;
+  its self-test must catch a CRLF copy, pugl left out, the symlink as a plain file, an extra file, a changed notice and
+  a lost executable bit. On every run the linux job makes it twice (identical), checks it and builds the plugin from it
+  in a folder without git; the macos job does the same with the universal build. Both builds must come out byte for
+  byte the same as the normal ones, and the tar must be the same on macOS and Linux.
+- **The zip** (`packaging/macos/make_zip.sh`): the bundle exactly as the installer installs it, with HOW TO
+  INSTALL.txt (`packaging/release/how-to-install.txt.in`) and the credits and licenses next to it, zipped with ditto
+  without extended attributes. In a signing run Apple's ticket is also stapled to the bundle, if Apple's stapler takes
+  a plugin bundle (report only). Checked after unzipping: the same files, the signature, the staple.
+- **The credits** in a release build (`PKG_RELEASE_TAG` for make_pkg.sh) also point at the release page with the
+  source as one download; every other build keeps the commit links only (the `[test]` / `[release]` lines in
+  CREDITS.txt.in), and `ci/check_pkg.sh` checks which.
+- **Put together** (`packaging/release/assemble.sh`) and **checked** (`ci/check_release.py`) on every run, by the
+  release-folder job: exactly the five files, SHA256SUMS right, the license Wolf Shaper's, the source tarball checked
+  again, the zip's layout and credits, and the notes (`packaging/release/release-notes.md.in`): nothing left to fill
+  in, no issue or pull request reference and no @mention (GitHub would show those on other people's projects or notify
+  people), the credits, the GPL version 3, every file and the three commits. Its self-test must catch an issue number,
+  an upstream issue link, an @mention, a placeholder, "or later", a changed byte, an extra or missing file and a wrong
+  title. On ordinary runs it uses the macos job's unsigned stand-ins (artifact `release-folder`, 7 days).
+- **A draft on the release page**, only when started by hand on an sw/ branch, after every job passed (job
+  release-draft, the only one allowed to write to the repository):
+  - `gh workflow run build.yml --ref sw/mac-fix -f release=rehearsal-draft`: the stand-ins under a throwaway name
+    (`rehearsal-<run>-<attempt>`, titled REHEARSAL), to try the path; delete it afterwards with
+    `gh release delete <name> --yes --cleanup-tag`.
+  - `gh workflow run build.yml --ref sw/mac-fix -f release=draft`: signs, notarizes and staples (macos-release), then
+    the draft under `RELEASE_TAG`.
+
+  `ci/check_release_draft.py` then checks the draft on GitHub: a draft at this run's commit, the title and notes, the
+  five files uploaded with the sha256 in SHA256SUMS, and reports whether the draft already made the tag.
+  Publishing is a separate step after Isaac has looked at the draft: `gh release edit <tag> --draft=false`, which
+  creates the tag at the draft's commit.
 
 ## The frozen files
 - `class-ids.txt`: the IDs measured on the official v1.0.2 releases, per platform.
@@ -202,4 +247,5 @@ run on macOS only, in a logged-in session, and macOS asks once for permission to
 ## Third-party code
 The check tool uses Steinberg's VST3 SDK interfaces (vst3_pluginterfaces, MIT license since VST 3.8), cloned at build
 time and not committed. The build flags follow DISTRHO/dpf-makefile-action (ISC license), which built the official
-releases. The check tool, the scripts and the test states are GPL-3.0-or-later, like Wolf Shaper.
+releases. The check tool, the scripts and the test states are GPL-3.0-or-later; Wolf Shaper itself is GPL-3.0
+(version 3; its source names no later version).
