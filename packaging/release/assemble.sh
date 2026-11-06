@@ -33,7 +33,7 @@ if command -v sha256sum >/dev/null; then
 else
     sum() { shasum -a 256 "$@"; }
 fi
-(cd "$assets" && ls | LC_ALL=C sort | while IFS= read -r f; do sum "$f"; done >"$out/SHA256SUMS.tmp")
+(cd "$assets" && ls | LC_ALL=C sort | while IFS= read -r f; do sum "$f"; done) >"$out/SHA256SUMS.tmp"
 mv "$out/SHA256SUMS.tmp" "$assets/SHA256SUMS"
 
 title="Wolf Shaper 1.0.2 for Mac, Windows-compatible VST3 ($tag)"
