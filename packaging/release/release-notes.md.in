@@ -1,0 +1,67 @@
+**Wolf Shaper** is a free, open-source waveshaper plugin by Patrick Desaulniers ([wolf-plugins/wolf-shaper](https://github.com/wolf-plugins/wolf-shaper)). This is a modified build of its version 1.0.2 for Mac, made by Sonic Weaponry so that projects and racks saved with Wolf Shaper's VST3 on Windows open on a Mac with Wolf Shaper loaded, instead of showing it as missing. It isn't an official Wolf Shaper release, and Wolf Shaper's authors don't endorse Sonic Weaponry.
+
+On Windows and Linux, keep using the [official Wolf Shaper 1.0.2](https://github.com/wolf-plugins/wolf-shaper/releases/tag/v1.0.2): this release changes nothing there.
+
+## What's different from the official 1.0.2 (Mac VST3 only)
+- **The plugin ID.** The official Mac VST3 reports a different ID than the Windows VST3: DPF writes the ID's bytes in an order that the VST3 SDK reads one way on Windows and another way on Mac. Hosts store that ID in projects, so a project saved on Windows can't find the official Mac plugin. This build reports the Windows ID (component class `445046206173636C7073577300000000`, controller class `44504620726C63747073577300000000`) on Apple Silicon and Intel.
+- **The sound.** Two build settings keep it the same as the official Windows 1.0.2: DSPFilters is compiled without `-ffinite-math-only` (today's compilers otherwise break the oversampling filter), and fused multiply-adds are off (`-ffp-contract=off`), so Apple Silicon calculates like Windows. With the same settings and the same audio, the difference from the official Windows 1.0.2 stays below -100 dBFS (the official Mac 1.0.2's difference is about -82 dBFS; both far below hearing).
+- **Saved settings and decimal commas.** Saved settings load correctly even if something in the host switches to a language setting that writes decimals with a comma (DPF's fix by Filipe Coelho).
+- **The bundle and the installer.** The plugin bundle has an Info.plist (DPF's fix by Filipe Coelho) and carries its license files and credits. The plugin and the installer are signed with Sonic Weaponry's Developer ID and notarized by Apple, so macOS opens the installer without a warning.
+
+Everything else is Wolf Shaper 1.0.2 as released: the same parameters, the same presets and saved settings, the same window.
+
+## Please note
+- **Mac projects saved with the official Mac Wolf Shaper VST3 will show it as missing** with this version, because they stored the official Mac ID. To go back, run the official 1.0.2 installer again.
+- The installer replaces only the VST3. If you installed the official VST2, LV2 or CLAP versions, they stay as they are.
+
+## Downloads
+| File | What it is |
+|---|---|
+| `wolf-shaper-@RELEASE_TAG@-macos-universal.pkg` | **The installer (recommended).** Installs `wolf-shaper.vst3` into /Library/Audio/Plug-Ins/VST3. Apple Silicon and Intel. |
+| `wolf-shaper-@RELEASE_TAG@-macos-universal-vst3.zip` | The same plugin without an installer, to copy by hand (HOW TO INSTALL.txt inside). |
+| `wolf-shaper-@RELEASE_TAG@-source.tar.gz` | The complete source code of this build, including the dpf and pugl folders. |
+| `LICENSE-GPL-3.0.txt` | The license. |
+| `SHA256SUMS` | Checksums of the four files above. |
+
+GitHub adds "Source code (zip)" and "Source code (tar.gz)" to every release by itself. Those leave out the dpf folder, so they can't build the plugin: use `wolf-shaper-@RELEASE_TAG@-source.tar.gz`.
+
+## Install
+1. Download the .pkg and double-click it. The installer shows the license (GPL-3.0): click Continue, Agree, then Install.
+2. Rescan plugins in your DAW (in Ableton Live: Settings > Plug-Ins > Rescan).
+
+To uninstall, delete `/Library/Audio/Plug-Ins/VST3/wolf-shaper.vst3`.
+
+## How it was tested
+On GitHub's Macs (macOS 26.6: Apple Silicon, and the Intel half under Rosetta), Windows and Linux, on every change, against the official 1.0.2:
+- the VST3 class IDs, the 11 parameters and the saved-settings format;
+- loading saved settings and saving them back byte for byte, also with a decimal-comma language setting;
+- the sound: test settings rendered on Mac and compared with the official Windows 1.0.2 (the difference stays below -100 dBFS);
+- the window: what the editor draws, pixel for pixel;
+- the installer: installed on a clean Mac and over the official installer, checked, and removed.
+
+Still to come: a test in a DAW on a real Mac. We'll update these notes when it's done.
+
+To check your download on a Mac (in Terminal, in the download folder):
+```
+shasum -a 256 -c SHA256SUMS
+pkgutil --check-signature wolf-shaper-@RELEASE_TAG@-macos-universal.pkg
+```
+
+## Source code and license
+Wolf Shaper is free software under the GNU General Public License, version 3. This build is made of:
+- wolf-shaper [`@COMMIT_SHORT@`](https://github.com/sonic-weaponry/wolf-shaper/tree/@COMMIT@) ([our changes since 1.0.2](https://github.com/sonic-weaponry/wolf-shaper/compare/v1.0.2...@COMMIT@))
+- dpf [`@DPF_COMMIT_SHORT@`](https://github.com/sonic-weaponry/DPF/tree/@DPF_COMMIT@) ([our changes since the DPF of the official 1.0.2](https://github.com/sonic-weaponry/DPF/compare/a4c83bfdc925db48f272e66a006a6630625c3e20...@DPF_COMMIT@))
+- pugl [`@PUGL_COMMIT_SHORT@`](https://github.com/DISTRHO/pugl/tree/@PUGL_COMMIT@), unchanged
+
+The source tarball holds exactly these three commits; the build checks every file against git when it makes it. The build commands are in `.github/workflows/build.yml` (job `macos`), the installer's in `packaging/macos/make_pkg.sh`.
+
+## Credits
+- **Wolf Shaper** by Patrick Desaulniers.
+- **DPF**, the DISTRHO Plugin Framework, by Filipe Coelho (falkTX), ISC license. The locale and Info.plist fixes in this build are his.
+- pugl by David Robillard (ISC), NanoVG by Mikko Mononen (zlib), DSPFilters by Vinnie Falco (MIT), the Chivo font by Omnibus-Type (SIL OFL 1.1) and the DejaVu Sans font (Bitstream Vera license).
+
+Thank you for making your work free.
+
+Problems with this build? Please don't report them to Wolf Shaper's authors: contact us at support@sonic-weaponry.com.
+
+The Sonic Weaponry Team

@@ -1,0 +1,24 @@
+HOW TO INSTALL WOLF SHAPER (Mac, VST3)
+======================================
+
+The easiest way is the installer, wolf-shaper-@RELEASE_TAG@-macos-universal.pkg,
+from the same page as this zip:
+https://github.com/sonic-weaponry/wolf-shaper/releases/tag/@RELEASE_TAG@
+
+To install by hand instead:
+1. Quit your DAW.
+2. In Finder, choose Go > Go to Folder..., type /Library/Audio/Plug-Ins/VST3
+   and press Return.
+3. If a wolf-shaper.vst3 is already there, move it to the Trash first.
+4. Drag wolf-shaper.vst3 from this folder into that folder. Your Mac may ask
+   for your password.
+5. Open your DAW and rescan your plugins (in Ableton Live: Settings >
+   Plug-Ins > Rescan).
+
+Projects saved on Windows will find this version. Mac projects saved with the
+official Mac version of Wolf Shaper will show it as missing.
+
+Credits, the source code and the license: "CREDITS and SOURCE.txt",
+"LICENSE (GPL-3.0).txt" and the LICENSES folder, next to this file.
+
+The Sonic Weaponry Team

@@ -19,6 +19,7 @@
 #   PKG_SIGNED=developer-id  signed with our Developer ID certificates: the installed copy must also meet Apple's
 #                            Developer ID requirement for $APPLE_TEAM_ID
 # PKG_RUN_NAME names the log folder (default: pkg) and prefixes the installed copies' check names.
+# PKG_RELEASE_TAG (a release build, as make_pkg.sh takes it): the credits must point at that release's page.
 #
 # Usage: ci/check_pkg.sh <vst3_check> <our .pkg> <version> <our built wolf-shaper.vst3> <official .pkg>
 # Run it from the repository root, with sudo rights. Logs go to ci-results/pkg/ and ci-results/macos-*-installed-*/.
@@ -143,6 +144,14 @@ done < <(cd "$built" && find . -type f)
 commit=$(git rev-parse HEAD)
 grep -q "tree/$commit" "$payload/Contents/Resources/CREDITS and SOURCE.txt" || { same=FAIL; echo "credits: no link to $commit"; }
 grep -q "tree/$commit" "$work/expanded/Resources/welcome.txt" || { same=FAIL; echo "welcome: no link to $commit"; }
+# A release build (PKG_RELEASE_TAG, packaging/macos/make_pkg.sh) also points at its release page; other builds don't.
+if [ -n "${PKG_RELEASE_TAG:-}" ]; then
+    grep -q "sonic-weaponry/wolf-shaper/releases/tag/$PKG_RELEASE_TAG\$" "$payload/Contents/Resources/CREDITS and SOURCE.txt" ||
+        { same=FAIL; echo "credits: no link to the release page of $PKG_RELEASE_TAG"; }
+elif grep -q "sonic-weaponry/wolf-shaper/releases/tag/" "$payload/Contents/Resources/CREDITS and SOURCE.txt"; then
+    same=FAIL
+    echo "credits: a release page link in a build that isn't a release"
+fi
 echo "--- the bundle in the package"
 (cd "$payload" && find . -type f -exec ls -l {} + | tr -s ' ' | cut -d ' ' -f 1,5,9-)
 result $same "payload: our build plus the license, credits and source files${signed:+ and the seal, the program's code and data our build's}"

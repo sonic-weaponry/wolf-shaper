@@ -29,7 +29,14 @@ license. It comes with no warranty. The full license is in
 
 SOURCE CODE
 -----------
-The complete source code of this exact build is free to download:
+[test] The complete source code of this exact build is free to download:
+[release] The complete source code of this exact build is free to download, as one
+[release] file with the dpf and pugl folders included
+[release] (wolf-shaper-@RELEASE_TAG@-source.tar.gz), from its release page:
+[release]
+[release]   https://github.com/sonic-weaponry/wolf-shaper/releases/tag/@RELEASE_TAG@
+[release]
+[release] It's also in our repositories:
 
   https://github.com/sonic-weaponry/wolf-shaper/tree/@COMMIT@
 

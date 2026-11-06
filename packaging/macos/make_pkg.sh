@@ -10,6 +10,8 @@
 #   SIGN_INSTALLER_IDENTITY  signs the installer (productbuild): the Developer ID Installer identity's name
 #   SIGN_KEYCHAIN            the keychain holding both identities
 #   SIGN_TIMESTAMP           "no" leaves out the secure timestamp (ad hoc signatures can't have one)
+# A release build (PKG_RELEASE_TAG, e.g. v1.0.2-sw.1): the credits also point at the release page, which carries the
+# complete source as one download. Other builds keep the commit links only (the "[test]" lines of CREDITS.txt.in).
 #
 # Usage: packaging/macos/make_pkg.sh <wolf-shaper.vst3> <version> <output .pkg>
 # Run it on macOS from the repository root after the build, with the dpf submodule checked out. See ci/README.md.
@@ -51,9 +53,17 @@ tr -d '\r' <libs/DSPFilters/include/DspFilters/Bessel.h |
     sed -n '/^"A Collection of Useful/,/^THE SOFTWARE\.$/p' >"$res/LICENSES/DSPFilters (MIT).txt"
 text "resources/fonts/Chivo/SIL Open Font License.txt" "$res/LICENSES/Chivo font (SIL OFL 1.1).txt"
 text dpf/dgl/src/resources/LICENSE-DejaVuSans.ttf.txt "$res/LICENSES/DejaVu Sans font (Bitstream Vera).txt"
-sed -e "s|@COMMIT@|$commit|g" -e "s|@DPF_COMMIT@|$dpf_commit|g" "$here/CREDITS.txt.in" >"$res/CREDITS and SOURCE.txt"
+release_tag=${PKG_RELEASE_TAG:-}
+if [ -n "$release_tag" ]; then
+    case $release_tag in v[0-9]*) ;; *) echo "::error::PKG_RELEASE_TAG $release_tag isn't a release tag"; exit 1 ;; esac
+    variant=(-e '/^\[test\]/d' -e 's/^\[release\] \{0,1\}//')
+else
+    variant=(-e '/^\[release\]/d' -e 's/^\[test\] //')
+fi
+sed "${variant[@]}" -e "s|@RELEASE_TAG@|$release_tag|g" -e "s|@COMMIT@|$commit|g" -e "s|@DPF_COMMIT@|$dpf_commit|g" \
+    "$here/CREDITS.txt.in" >"$res/CREDITS and SOURCE.txt"
 if ! grep -q 'Permission is hereby granted' "$res/LICENSES/DSPFilters (MIT).txt" ||
-    grep -q '@[A-Z_]*@' "$res/CREDITS and SOURCE.txt"; then
+    grep -q -e '@[A-Z_]*@' -e '^\[test\]' -e '^\[release\]' "$res/CREDITS and SOURCE.txt"; then
     echo "::error::the DSPFilters license or the credits came out wrong"
     exit 1
 fi
