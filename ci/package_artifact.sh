@@ -25,7 +25,7 @@ cat >"$to/SOURCE.txt" <<EOF
 Wolf Shaper VST3 for $platform. A CI build for testing, not a release.
 
 Wolf Shaper is made by Patrick Desaulniers: https://github.com/wolf-plugins/wolf-shaper
-It is free software under the GNU General Public License, version 3 or later (licenses/Wolf-Shaper-GPL-3.0.txt).
+It is free software under the GNU General Public License, version 3 (licenses/Wolf-Shaper-GPL-3.0.txt).
 It is built on DPF, the DISTRHO Plugin Framework, by Filipe Coelho (falkTX): https://github.com/DISTRHO/DPF (ISC).
 It also contains pugl (ISC), NanoVG (zlib), DSPFilters (MIT) and the Chivo font (SIL OFL 1.1). Their licenses are in
 licenses/, with the license of the DejaVu Sans font that DPF carries.
