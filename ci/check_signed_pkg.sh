@@ -11,7 +11,8 @@
 #     with a secure timestamp and meeting Apple's Developer ID requirement for our team, the package by "Developer ID
 #     Installer: ..." with a trusted timestamp. With the log folder (packaging/macos/notarize.sh's): Apple accepted
 #     exactly this package with no issues, and its ticket covers the plugin's two slices; the ticket is stapled and
-#     validates; Gatekeeper accepts the package as "Notarized Developer ID".
+#     validates; Gatekeeper accepts the package as "Notarized Developer ID"; and pkgutil, asked after Gatekeeper's
+#     assessment, calls it trusted by the Apple notary service.
 #
 # Run it from the repository root on macOS. Logs go to ci-results/signing-<kind>/. Exits 1 if any check failed.
 set -u
@@ -143,7 +144,16 @@ PY
     check "Gatekeeper: accepts the package as Notarized Developer ID" \
         grep -q 'accepted' <<<"$gatekeeper"
     check "Gatekeeper: source is Notarized Developer ID" has_text "source=Notarized Developer ID" "$gatekeeper"
-    check "package: notarization trusted (pkgutil)" has_text "Notarization: trusted by the Apple notary service" "$signature"
+    # pkgutil reports notarization from what this Mac has recorded about the package, which Gatekeeper's assessment
+    # above does (it reads the stapled ticket). Asked right after stapling, pkgutil printed no Notarization line; the
+    # same command on the same file after the assessment said "trusted" (the first Developer ID signing run). So it's
+    # asked again here, and its first answer is only reported.
+    before=$(grep -m 1 'Notarization:' <<<"$signature" | sed 's/^ *//')
+    echo "REPORT pkgutil's notarization line before Gatekeeper's assessment: ${before:-none}"
+    signature_after=$(pkgutil --check-signature "$pkg" 2>&1)
+    echo "$signature_after" >"$out/pkgutil-check-signature-after-gatekeeper.txt"
+    check "package: notarization trusted (pkgutil, after Gatekeeper's assessment)" \
+        has_text "Notarization: trusted by the Apple notary service" "$signature_after"
 fi
 
 rm -rf "$work"
